@@ -3,7 +3,8 @@
 Unofficial; not affiliated with or endorsed by Govee.
 
 Shows any picture or animated GIF on a Govee H8630 Gaming Pixel Light (32×32) from Home Assistant
-automations, with no need to create it in the Govee app first.
+automations, with no need to create it in the Govee app first. It can also draw live weather,
+scrolling text and built-in animated scenes on the light.
 
 ## How it works
 
@@ -58,14 +59,104 @@ upscaled preview of what was last sent.
 Notes: animations up to ~15 KB match Govee's own scenes, and a 24-frame 32×32 GIF is ~12 KB.
 Pixel art drawn at 32×32 looks best. Frames identical to the previous one are merged.
 
+## Action: `govee_pixel.show_weather`
+
+An animated weather icon with the temperature underneath, or a 3-day forecast, drawn live.
+
+| Field | |
+|---|---|
+| `device_id` | The light(s) |
+| `weather_entity` | A `weather.*` entity: its condition, temperature and unit are used |
+| `forecast` | `true` shows the next three days (icon, high, low) from the entity's daily forecast |
+| `condition` | Any Home Assistant weather condition (`sunny`, `clear-night`, `partlycloudy`, `cloudy`, `fog`, `rainy`, `pouring`, `lightning`, `lightning-rainy`, `snowy`, `snowy-rainy`, `hail`, `windy`, `exceptional`). Overrides the entity's |
+| `temperature` | Number to show. Overrides the entity's |
+| `temperature_unit` | `°C` / `°F`, picks the temperature colour (defaults to the entity's or the system unit) |
+
+## Action: `govee_pixel.show_text`
+
+A message in a chunky 3×5 pixel font (letters are shown in capitals). Text that fits is centred;
+longer text scrolls. The light holds at most 100 frames, so long messages scroll in bigger steps.
+
+| Field | |
+|---|---|
+| `message` | The text |
+| `color` | RGB; leave out for a rainbow |
+| `background` | RGB, default black |
+| `size` | `large` (about 4 characters at once) or `small` (about 8) |
+| `frame_duration` | ms per scroll step, default 70 |
+
+## Action: `govee_pixel.show_animation`
+
+One of the built-in animated scenes: `morning`, `bus`, `maths`, `reading`, `art`, `music`,
+`sport`, `playground`, `lunch`, `homework`, `bedtime`, `heart`.
+
+All four actions return `{devices: {<name>: {confirmed, frames, bytes}}}`.
+
+## Generating GIF files
+
+`scripts/generate_gifs.py` renders the same designs to GIF files (only Pillow needed), e.g. to
+copy into `/config/www/` or to preview them:
+
+```sh
+pip install pillow
+python3 scripts/generate_gifs.py all          # every design + preview_sheet.png in ./pixel_displays/
+python3 scripts/generate_gifs.py weather rainy 17
+python3 scripts/generate_gifs.py forecast sunny:24:13 partlycloudy:21:12 rainy:16:9
+python3 scripts/generate_gifs.py text "Dinner time!" --color 255,200,0
+python3 scripts/generate_gifs.py animation bedtime
+```
+
 ## Examples
 
-Weather icon from GIFs you drop into `/config/www/govee/` (named after the weather states):
+Live weather whenever it changes:
 
 ```yaml
 triggers:
   - trigger: state
     entity_id: weather.home
+actions:
+  - action: govee_pixel.show_weather
+    data:
+      device_id: <your light's device id>
+      weather_entity: weather.home
+```
+
+Tomorrow's forecast every evening:
+
+```yaml
+triggers:
+  - trigger: time
+    at: "19:00:00"
+actions:
+  - action: govee_pixel.show_weather
+    data:
+      device_id: <your light's device id>
+      weather_entity: weather.home
+      forecast: true
+```
+
+A routine reminder:
+
+```yaml
+triggers:
+  - trigger: time
+    at: "07:45:00"
+actions:
+  - action: govee_pixel.show_animation
+    data:
+      device_id: <your light's device id>
+      animation: bus
+  - delay: 30
+  - action: govee_pixel.show_text
+    data:
+      device_id: <your light's device id>
+      message: "Shoes on!"
+      color: [255, 200, 0]
+```
+
+Your own GIFs, picked by a template (here: named after the weather state):
+
+```yaml
 actions:
   - action: govee_pixel.show_image
     data:

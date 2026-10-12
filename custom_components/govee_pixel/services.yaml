@@ -59,3 +59,118 @@ show_image:
           min: 1
           max: 100
           mode: box
+
+show_weather:
+  fields:
+    device_id:
+      required: true
+      selector:
+        device:
+          integration: govee_pixel
+          multiple: true
+    weather_entity:
+      selector:
+        entity:
+          domain: weather
+    forecast:
+      default: false
+      selector:
+        boolean:
+    condition:
+      example: rainy
+      selector:
+        select:
+          custom_value: true
+          options:
+            - sunny
+            - clear-night
+            - partlycloudy
+            - cloudy
+            - fog
+            - rainy
+            - pouring
+            - lightning
+            - lightning-rainy
+            - snowy
+            - snowy-rainy
+            - hail
+            - windy
+            - exceptional
+    temperature:
+      example: 21
+      selector:
+        number:
+          min: -99
+          max: 199
+          mode: box
+    temperature_unit:
+      selector:
+        select:
+          options:
+            - "°C"
+            - "°F"
+
+show_text:
+  fields:
+    device_id:
+      required: true
+      selector:
+        device:
+          integration: govee_pixel
+          multiple: true
+    message:
+      required: true
+      example: Dinner is ready!
+      selector:
+        text:
+    color:
+      selector:
+        color_rgb:
+    background:
+      default: [0, 0, 0]
+      selector:
+        color_rgb:
+    size:
+      default: large
+      selector:
+        select:
+          translation_key: size
+          options:
+            - large
+            - small
+    frame_duration:
+      default: 70
+      selector:
+        number:
+          min: 30
+          max: 1000
+          step: 10
+          unit_of_measurement: ms
+          mode: box
+
+show_animation:
+  fields:
+    device_id:
+      required: true
+      selector:
+        device:
+          integration: govee_pixel
+          multiple: true
+    animation:
+      required: true
+      selector:
+        select:
+          translation_key: animation
+          options:
+            - morning
+            - bus
+            - maths
+            - reading
+            - art
+            - music
+            - sport
+            - playground
+            - lunch
+            - homework
+            - bedtime
+            - heart

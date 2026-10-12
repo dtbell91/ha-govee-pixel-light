@@ -69,6 +69,28 @@
         "bilinear": "Bilinear",
         "lanczos": "Lanczos (photos)"
       }
+    },
+    "size": {
+      "options": {
+        "large": "Large (10 px tall)",
+        "small": "Small (5 px tall)"
+      }
+    },
+    "animation": {
+      "options": {
+        "morning": "Morning",
+        "bus": "Bus",
+        "maths": "Maths",
+        "reading": "Reading",
+        "art": "Art",
+        "music": "Music",
+        "sport": "Sport",
+        "playground": "Playground",
+        "lunch": "Lunch",
+        "homework": "Homework",
+        "bedtime": "Bedtime",
+        "heart": "Heart"
+      }
     }
   },
   "services": {
@@ -111,6 +133,80 @@
         "max_frames": {
           "name": "Max frames",
           "description": "Longer animations are thinned out to this many frames (device limit 100)."
+        }
+      }
+    },
+    "show_weather": {
+      "name": "Show weather",
+      "description": "Show an animated weather icon with the temperature, or a 3-day forecast, drawn on the light. Use a weather entity, or give a condition and temperature.",
+      "fields": {
+        "device_id": {
+          "name": "Light",
+          "description": "Pixel light(s) to show it on."
+        },
+        "weather_entity": {
+          "name": "Weather entity",
+          "description": "Take the condition, temperature and unit from this weather entity."
+        },
+        "forecast": {
+          "name": "3-day forecast",
+          "description": "Show the next three days (icon, high, low) from the weather entity's daily forecast instead of current conditions."
+        },
+        "condition": {
+          "name": "Condition",
+          "description": "Weather condition, e.g. sunny, rainy, snowy (overrides the entity's)."
+        },
+        "temperature": {
+          "name": "Temperature",
+          "description": "Temperature to show (overrides the entity's)."
+        },
+        "temperature_unit": {
+          "name": "Temperature unit",
+          "description": "Used to pick the temperature colour. Defaults to the entity's or your system's unit."
+        }
+      }
+    },
+    "show_text": {
+      "name": "Show text",
+      "description": "Show a message in a chunky pixel font. Short text is centred, longer text scrolls.",
+      "fields": {
+        "device_id": {
+          "name": "Light",
+          "description": "Pixel light(s) to show it on."
+        },
+        "message": {
+          "name": "Message",
+          "description": "Letters, digits and basic punctuation (shown in capitals)."
+        },
+        "color": {
+          "name": "Colour",
+          "description": "Text colour. Leave empty for a rainbow."
+        },
+        "background": {
+          "name": "Background",
+          "description": "Background colour."
+        },
+        "size": {
+          "name": "Size",
+          "description": "Large fits about 4 characters on screen at once, small about 8."
+        },
+        "frame_duration": {
+          "name": "Speed",
+          "description": "Milliseconds per scroll step (lower is faster)."
+        }
+      }
+    },
+    "show_animation": {
+      "name": "Show animation",
+      "description": "Show one of the built-in animated scenes.",
+      "fields": {
+        "device_id": {
+          "name": "Light",
+          "description": "Pixel light(s) to show it on."
+        },
+        "animation": {
+          "name": "Animation",
+          "description": "Which scene to show."
         }
       }
     }

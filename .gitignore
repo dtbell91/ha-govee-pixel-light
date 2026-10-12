@@ -1,3 +1,5 @@
 __pycache__/
 *.pyc
 .venv/
+*:Zone.Identifier
+pixel_displays/

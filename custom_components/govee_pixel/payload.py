@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import io
 import struct
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 from PIL import Image, ImageChops, ImageSequence
@@ -81,26 +82,28 @@ def _fit(img: Image.Image, size: int, fit: str, resample: Image.Resampling,
     return canvas.convert("RGB")
 
 
-def frames_from_image(data: bytes, size: int = 32, fit: str = FIT_CONTAIN, resample: str = "lanczos",
-                      background: tuple[int, int, int] = (0, 0, 0), duration: int | None = None,
-                      max_frames: int = MAX_FRAMES) -> list[Frame]:
-    """Decode a still or animated image (PNG, JPEG, GIF, WebP, APNG...) into matrix frames.
+def frames_from_images(images: Iterable[tuple[Image.Image, int]], size: int = 32, fit: str = FIT_CONTAIN,
+                       resample: str = "lanczos", background: tuple[int, int, int] = (0, 0, 0),
+                       max_frames: int = MAX_FRAMES) -> list[Frame]:
+    """Fit (image, duration_ms) pairs to the matrix.
 
-    `duration` overrides per-frame timing (and is the timing used for still images).
     Consecutive identical frames are merged; animations longer than `max_frames` are
     evenly decimated with their time folded into the kept frames.
     """
     max_frames = max(1, min(max_frames, MAX_FRAMES))
     rs = RESAMPLE[resample]
-    src = Image.open(io.BytesIO(data))
     frames: list[Frame] = []
-    for raw in ImageSequence.Iterator(src):
-        d = duration or raw.info.get("duration") or DEFAULT_DURATION_MS
-        img = _fit(raw, size, fit, rs, background)
+    for raw, d in images:
+        if raw.size == (size, size) and raw.mode == "RGB":
+            img = raw.copy()
+        else:
+            img = _fit(raw, size, fit, rs, background)
         if frames and ImageChops.difference(frames[-1].image, img).getbbox() is None:
             frames[-1].duration += int(d)
         else:
             frames.append(Frame(img, int(d)))
+    if not frames:
+        raise ValueError("no frames")
     if len(frames) > max_frames:
         step = len(frames) / max_frames
         kept: list[Frame] = []
@@ -111,6 +114,19 @@ def frames_from_image(data: bytes, size: int = 32, fit: str = FIT_CONTAIN, resam
     for f in frames:
         f.duration = max(MIN_DURATION_MS, min(MAX_DURATION_MS, f.duration))
     return frames
+
+
+def frames_from_image(data: bytes, size: int = 32, fit: str = FIT_CONTAIN, resample: str = "lanczos",
+                      background: tuple[int, int, int] = (0, 0, 0), duration: int | None = None,
+                      max_frames: int = MAX_FRAMES) -> list[Frame]:
+    """Decode a still or animated image (PNG, JPEG, GIF, WebP, APNG...) into matrix frames.
+
+    `duration` overrides per-frame timing (and is the timing used for still images).
+    """
+    src = Image.open(io.BytesIO(data))
+    return frames_from_images(
+        ((raw, duration or raw.info.get("duration") or DEFAULT_DURATION_MS) for raw in ImageSequence.Iterator(src)),
+        size, fit, resample, background, max_frames)
 
 
 def preview_gif(frames: list[Frame], scale: int = 8) -> bytes:
