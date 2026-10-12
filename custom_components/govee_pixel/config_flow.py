@@ -15,8 +15,8 @@ from homeassistant.helpers.selector import SelectSelector, SelectSelectorConfig
 from .api import GoveeApi, GoveeAuthError, GoveeError, GoveeNeedsCode
 from .const import (
     CONF_ACCOUNT_ID, CONF_ACCOUNT_TOPIC, CONF_BASE_URL, CONF_CLIENT_ID, CONF_CODE, CONF_ENCODER, CONF_PLAYBACK,
-    CONF_REFRESH_MINUTES, CONF_RESUME, CONF_TOKEN, DEFAULT_REFRESH_MINUTES, DOMAIN, PLAYBACK_HA, PLAYBACK_LIGHT,
-    RESUME_MODE_PACKET, RESUME_REPUSH,
+    CONF_RECLAIM, CONF_REFRESH_MINUTES, CONF_RESUME, CONF_TOKEN, DEFAULT_REFRESH_MINUTES, DOMAIN, PLAYBACK_HA,
+    PLAYBACK_LIGHT, RESUME_MODE_PACKET, RESUME_REPUSH,
 )
 from .payload import ENCODER_AUTO, ENCODER_FRAMES
 
@@ -110,6 +110,7 @@ class GoveePixelOptionsFlow(OptionsFlow):
                 SelectSelectorConfig(options=[PLAYBACK_LIGHT, PLAYBACK_HA], translation_key=CONF_PLAYBACK)),
             vol.Required(CONF_RESUME, default=o.get(CONF_RESUME, RESUME_REPUSH)): SelectSelector(
                 SelectSelectorConfig(options=[RESUME_REPUSH, RESUME_MODE_PACKET], translation_key=CONF_RESUME)),
+            vol.Required(CONF_RECLAIM, default=o.get(CONF_RECLAIM, True)): bool,
             vol.Required(CONF_REFRESH_MINUTES, default=o.get(CONF_REFRESH_MINUTES, DEFAULT_REFRESH_MINUTES)):
                 vol.All(vol.Coerce(int), vol.Range(1, 1440)),
             vol.Required(CONF_ENCODER, default=o.get(CONF_ENCODER, ENCODER_FRAMES)): SelectSelector(

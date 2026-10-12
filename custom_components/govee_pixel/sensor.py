@@ -43,4 +43,7 @@ class PlaylistStatus(PlaylistEntity, SensorEntity):
             "resume_at": _ts(c.interrupt_until),
             "last_push": _ts(c.last_push),
             "last_error": c.last_error,
+            "light_on": c.light_on,
+            "light_mode": c.light_mode,
+            "reapply_pending": c.reapply_pending,
         }

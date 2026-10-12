@@ -178,6 +178,27 @@ class GoveeIot:
         # 33 05 <result>: 00 = downloaded and shown, 01 = download failed
         return ack[:2] == b"\x33\x05" and ack[2] == 0
 
+    async def async_status(self, topic: str, timeout: float = 10) -> dict | None:
+        """Ask the light for its state: {"on": bool | None, "mode": bytes | None} (None if no reply).
+
+        "mode" is the light's echo of its current mode packet, e.g. aa 05 0a fe 00 .. for one of our
+        images, aa 05 82 .. while its own playlist rotates.
+        """
+        reply = await self.async_command(topic, "status", {}, timeout)
+        if reply is None:
+            return None
+        on = (reply.get("state") or {}).get("onOff")
+        mode = None
+        for item in (reply.get("op") or {}).get("command") or []:
+            try:
+                frame = base64.b64decode(item)
+            except ValueError:
+                continue
+            if frame[:2] == b"\xaa\x05":
+                mode = frame
+                break
+        return {"on": None if on is None else bool(on), "mode": mode}
+
     async def async_pt_real(self, topic: str, frames: list[bytes]) -> None:
         """Send raw 20-byte frames (checksum added), e.g. 33 01 01 = power on."""
         b64 = lambda b: base64.b64encode(frame20(b)).decode()  # noqa: E731

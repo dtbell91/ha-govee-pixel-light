@@ -69,5 +69,10 @@ def parse_playlist(data: bytes) -> list[tuple[int, int, bytes, bytes, bytes]]:
 
 
 def start_packet(playlist_id: int, flag: int = 0) -> bytes:
-    """Mode packet that switches the light to its playlist (sub-mode 0x82). 19 bytes, checksum added on send."""
+    """Mode packet for the light's playlist (sub-mode 0x82). 19 bytes, checksum added on send.
+
+    Firmware flag meanings (govee_app FUN_00021594): 0 = store the id and start the stored playlist;
+    1 = delete the stored playlist if the id matches; 2 = wipe it and fall back to the built-in one.
+    Only 0 is used here (also for resuming).
+    """
     return bytes([0x33, 0x05, 0x82]) + struct.pack("<I", playlist_id) + bytes(4) + bytes([0, flag])

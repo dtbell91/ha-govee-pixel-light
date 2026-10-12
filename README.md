@@ -41,6 +41,7 @@ This integration runs alongside other Govee integrations. It uses its own login 
 | Effect base URL | The address the *light* uses to reach Home Assistant. By default `http://<HA LAN IP>:<port>`. Set it by hand (e.g. `http://192.168.1.10:8123`) if HA uses SSL with a certificate the light would not trust, or if the detected IP is wrong. Plain HTTP on the LAN works. Keep it short: the light stores playlist URLs in ~128-character slots |
 | Playlist playback | **On the light** (default): one command sends the whole playlist and the light rotates by itself. **From Home Assistant**: HA sends each item in turn (one cloud command per item). If the light rejects a playlist, HA falls back to rotating it automatically |
 | Resume after an interruption | **Re-send playlist** (default, confirmed by the light; cached items are not downloaded again) or **Switch back only** (experimental: just re-selects the light's stored playlist) |
+| Re-apply the playlist if the light shows something else | On by default. At each refresh HA asks the light what it is showing; if it is on but not showing the playlist (after a power cut the light does not restore its playlist mode, or a scene was picked in the Govee app), the playlist is sent again. Turn off if you want scenes chosen elsewhere to stay |
 | Refresh live items every | How often weather / URL / camera items are redrawn (default 15 min). Only items whose picture changed are downloaded again |
 | Image encoding | **PNG frames** (default, verified) or **Automatic** (experimental): also uses the light's native GIF format when that is lossless and smaller, and sends 32×32 GIFs unchanged |
 
@@ -111,13 +112,15 @@ itself. Items are any of the four content types above, with the same options as 
 - `switch.<light>_playlist` starts / stops it (stopping clears the screen).
 - `sensor.<light>_playlist_status`: `stopped`, `rotating` (on the light), `rotating_ha` (from Home
   Assistant), `interrupted`, `paused` or `error`; attributes list the items, when an interruption
-  ends and the last error. (The light does the rotating, so HA does not know which item is on screen.)
+  ends, the last error, and the light's last reported on/off state and mode. (The light does the rotating, so HA does not know which item is on screen.)
 - `govee_pixel.playlist_add`: add an item, or replace the item with the same name (`name`,
   `item_type`: image/weather/text/animation, `options`, `duration`, optional `position`).
 - `govee_pixel.playlist_remove` (`name`), `govee_pixel.playlist_clear`,
   `govee_pixel.playlist_resume`, `govee_pixel.playlist_refresh` (redraw everything now).
 
-Changes are sent to the light straight away while the playlist is playing. The light caches items
+Changes are sent to the light straight away while the playlist is playing. Automatic re-sends
+(refreshes, resuming after an interruption, re-applying) wait while the light is switched off, so
+they never wake it; they catch up at the next refresh after it is back on. The light caches items
 by URL and every file's URL is derived from its content, so only new or changed pictures are
 downloaded. Playlist files are served by Home Assistant, so the light needs to be able to reach it
 whenever it (re)loads the playlist.

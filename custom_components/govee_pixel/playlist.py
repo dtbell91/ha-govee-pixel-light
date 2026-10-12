@@ -27,7 +27,7 @@ from homeassistant.helpers.event import async_call_later, async_track_time_inter
 
 from . import content, looplay, payload
 from .const import (
-    CONF_PLAYBACK, CONF_REFRESH_MINUTES, CONF_RESUME, DEFAULT_REFRESH_MINUTES, PLAYBACK_HA, PLAYBACK_LIGHT,
+    CONF_PLAYBACK, CONF_RECLAIM, CONF_REFRESH_MINUTES, CONF_RESUME, DEFAULT_REFRESH_MINUTES, PLAYBACK_HA, PLAYBACK_LIGHT,
     RESUME_MODE_PACKET, RESUME_REPUSH,
 )
 from .display import async_push_effect, async_render, async_set_preview, file_url
@@ -62,6 +62,9 @@ class PlaylistController:
         self.last_error: str | None = None
         self.last_push: float | None = None
         self.interrupt_until: float | None = None
+        self.light_on: bool | None = None  # from the light's last status reply
+        self.light_mode: str | None = None
+        self.reapply_pending = False  # an automatic re-send is waiting for the light to be on
         self._ha_fallback = False
         self._save = save
         self._lock = asyncio.Lock()
@@ -106,9 +109,9 @@ class PlaylistController:
         self._refresh_cancel = async_track_time_interval(
             self.hass, self._async_refresh_tick, timedelta(minutes=max(1, minutes)))
         if self.active and self.items:
-            # The light keeps its playlist across restarts; only push if content changed (e.g. weather).
+            # The light keeps its playlist file across restarts; re-check content and what it shows.
             self.status = STATUS_HA if self.playback == PLAYBACK_HA else STATUS_LIGHT
-            self.hass.async_create_background_task(self._async_safe_push(), f"govee_pixel refresh {self.dev.name}")
+            self.hass.async_create_background_task(self._async_refresh_tick(), f"govee_pixel refresh {self.dev.name}")
 
     async def async_stop(self) -> None:
         for cancel in (self._resume_cancel, self._refresh_cancel):
@@ -175,6 +178,7 @@ class PlaylistController:
             self._cancel_resume()
             await self._async_stop_rotation()
             self.status, self.last_error, self._ha_fallback = STATUS_STOPPED, None, False
+            self.reapply_pending = False
             # Replace the rotation on the light with a blank screen.
             blank = content.Prepared(lambda size: [payload.Frame(Image.new("RGB", (size, size)), 1000)],
                                      (0, 0, 0), "blank")
@@ -257,15 +261,51 @@ class PlaylistController:
         self.status, self.last_error, self.last_push = STATUS_LIGHT, None, time.time()
         self._changed()
 
-    async def _async_safe_push(self, force: bool = False) -> None:
+    async def _async_safe_push(self, force: bool = False) -> bool:
         try:
             await self.async_push(force)
         except HomeAssistantError as err:
             _LOGGER.warning("%s: playlist update failed: %s", self.dev.name, err)
+            return False
+        return True
+
+    async def _async_light_state(self) -> dict | None:
+        """Ask the light whether it is on and what it shows (None if it doesn't answer)."""
+        try:
+            state = await self.entry.runtime_data.iot.async_status(self.dev.topic)
+        except IotError as err:
+            _LOGGER.debug("%s: status query failed: %s", self.dev.name, err)
+            return None
+        if state is not None:
+            self.light_on = state["on"]
+            self.light_mode = state["mode"].hex() if state["mode"] else None
+            self._changed()
+        return state
+
+    @staticmethod
+    def _shows_ours(mode: bytes | None) -> bool:
+        """True if the light's mode echo is our playlist (aa 05 82 ..) or one of our effects (aa 05 0a fe ..)."""
+        if not mode or len(mode) < 5:
+            return True  # unknown: don't second-guess
+        return mode[2] == 0x82 or mode[2:5] == b"\x0a\xfe\x00"
 
     async def _async_refresh_tick(self, _now=None) -> None:
-        if self.active and self.items and self.interrupt_until is None and self.status != STATUS_PAUSED:
+        if not (self.active and self.items) or self.interrupt_until is not None or self.status == STATUS_PAUSED:
+            return
+        if self.playback == PLAYBACK_HA:
             await self._async_safe_push()
+            return
+        state = await self._async_light_state()
+        if state is not None and state["on"] is False:
+            return  # don't wake a light that was switched off; catch up when it is back on
+        force = self.reapply_pending
+        if (state is not None and self.entry.options.get(CONF_RECLAIM, True)
+                and not self._shows_ours(state["mode"])):
+            # e.g. after a power cycle (the light doesn't restore its playlist mode) or a scene picked elsewhere
+            _LOGGER.info("%s shows something else (%s); re-applying the playlist", self.dev.name, self.light_mode)
+            force = True
+        if await self._async_safe_push(force) and force:
+            self.reapply_pending = False
 
     # ---------- interruptions ----------
     async def async_interrupt(self, show: Callable[[], Any], hold: int) -> Any:
@@ -286,6 +326,13 @@ class PlaylistController:
 
     async def _async_resume_cb(self, _now=None) -> None:
         self._resume_cancel = None
+        if self.active and self.playback != PLAYBACK_HA:
+            state = await self._async_light_state()
+            if state is not None and state["on"] is False:
+                # Switched off during the interruption: resume on the next refresh once it is on again.
+                self.interrupt_until, self.status, self.reapply_pending = None, STATUS_LIGHT, True
+                self._changed()
+                return
         try:
             await self.async_resume()
         except HomeAssistantError as err:

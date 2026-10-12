@@ -12,6 +12,7 @@ CONF_ENCODER = "encoder"
 CONF_PLAYBACK = "playback"
 CONF_RESUME = "resume"
 CONF_REFRESH_MINUTES = "refresh_minutes"
+CONF_RECLAIM = "reclaim"
 
 PLAYBACK_LIGHT = "light"
 PLAYBACK_HA = "home_assistant"
