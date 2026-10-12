@@ -1,0 +1,61 @@
+show_image:
+  fields:
+    device_id:
+      required: true
+      selector:
+        device:
+          integration: govee_pixel
+          multiple: true
+    image_path:
+      example: /config/www/govee/weather.gif
+      selector:
+        text:
+    image_url:
+      example: https://example.com/animation.gif
+      selector:
+        text:
+          type: url
+    image_entity:
+      selector:
+        entity:
+          domain:
+            - image
+            - camera
+    fit:
+      default: contain
+      selector:
+        select:
+          translation_key: fit
+          options:
+            - contain
+            - cover
+            - stretch
+    resample:
+      default: lanczos
+      selector:
+        select:
+          translation_key: resample
+          options:
+            - nearest
+            - box
+            - bilinear
+            - lanczos
+    background:
+      default: [0, 0, 0]
+      selector:
+        color_rgb:
+    frame_duration:
+      selector:
+        number:
+          min: 30
+          max: 30000
+          step: 10
+          unit_of_measurement: ms
+          mode: box
+    max_frames:
+      default: 100
+      selector:
+        number:
+          min: 1
+          max: 100
+          mode: box

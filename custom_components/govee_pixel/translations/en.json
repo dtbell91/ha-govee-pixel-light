@@ -1,0 +1,118 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Govee account",
+        "description": "Log in with the Govee Home account that owns the pixel light. Images are served from Home Assistant on your LAN; only the short 'show this' command goes through Govee's cloud.",
+        "data": {
+          "email": "Email",
+          "password": "Password"
+        }
+      },
+      "code": {
+        "title": "Verification code",
+        "description": "Govee emailed a verification code to {email}. Enter it to finish logging in.",
+        "data": {
+          "code": "Verification code"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Log in again",
+        "description": "Govee rejected the saved session for {email}. Enter the password to log in again.",
+        "data": {
+          "password": "Password"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Invalid email or password.",
+      "invalid_code": "The verification code was not accepted.",
+      "cannot_connect": "Could not reach Govee's servers.",
+      "no_devices": "No Govee pixel light (H8630) found on this account."
+    },
+    "abort": {
+      "already_configured": "This Govee account is already configured.",
+      "reauth_successful": "Logged in again.",
+      "unique_id_mismatch": "That is a different Govee account."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Effect download address",
+        "description": "The light downloads each image from Home Assistant over HTTP. Leave empty to use this Home Assistant's LAN IP and port. Set it (for example http://192.168.1.10:8123) if the light cannot reach the default.",
+        "data": {
+          "base_url": "Effect base URL"
+        }
+      }
+    }
+  },
+  "entity": {
+    "image": {
+      "last_image": {
+        "name": "Last image"
+      }
+    }
+  },
+  "selector": {
+    "fit": {
+      "options": {
+        "contain": "Contain (letterbox)",
+        "cover": "Cover (crop)",
+        "stretch": "Stretch"
+      }
+    },
+    "resample": {
+      "options": {
+        "nearest": "Nearest (pixel art)",
+        "box": "Box",
+        "bilinear": "Bilinear",
+        "lanczos": "Lanczos (photos)"
+      }
+    }
+  },
+  "services": {
+    "show_image": {
+      "name": "Show image",
+      "description": "Show a picture or animated GIF on the pixel light. Give exactly one of path, URL or entity.",
+      "fields": {
+        "device_id": {
+          "name": "Light",
+          "description": "Pixel light(s) to show the image on."
+        },
+        "image_path": {
+          "name": "File path",
+          "description": "Local file, e.g. /config/www/govee/weather.gif (must be in allowlist_external_dirs; /config/www and /media are allowed by default)."
+        },
+        "image_url": {
+          "name": "URL",
+          "description": "Image or GIF to download."
+        },
+        "image_entity": {
+          "name": "Image or camera entity",
+          "description": "Use the current picture of an image or camera entity."
+        },
+        "fit": {
+          "name": "Fit",
+          "description": "How to fit non-square images onto the 32x32 matrix."
+        },
+        "resample": {
+          "name": "Scaling filter",
+          "description": "Nearest keeps pixel art crisp; Lanczos is best for photos."
+        },
+        "background": {
+          "name": "Background",
+          "description": "Colour behind transparent pixels and letterbox bars."
+        },
+        "frame_duration": {
+          "name": "Frame duration",
+          "description": "Override the time each frame is shown (default: the GIF's own timing, or 100 ms)."
+        },
+        "max_frames": {
+          "name": "Max frames",
+          "description": "Longer animations are thinned out to this many frames (device limit 100)."
+        }
+      }
+    }
+  }
+}
