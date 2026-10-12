@@ -10,8 +10,7 @@ from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import GoveePixelConfigEntry
-from .const import DOMAIN
-from .services import SIGNAL_PREVIEW
+from .const import DOMAIN, SIGNAL_PREVIEW
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: GoveePixelConfigEntry,

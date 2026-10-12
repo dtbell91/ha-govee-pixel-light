@@ -1,8 +1,9 @@
-"""Govee Pixel Light (H8630): show images and GIFs from Home Assistant.
+"""Govee Pixel Light (H8630): show images, GIFs and playlists from Home Assistant.
 
-Pipeline: image -> 32x32 PNG frames -> graffiti effect payload -> served by HA with an MD5 ETag
+Pipeline: content -> 32x32 effect file (PNG frames or GIF) -> served by HA with an MD5 ETag
 -> `ptUrl` command over Govee's AWS IoT MQTT -> the light downloads it from HA over the LAN.
-Only the small trigger command touches Govee's cloud; image bytes stay on the LAN.
+Playlists use the light's own rotation: HA serves a playlist file plus one file per item.
+Only the small trigger commands touch Govee's cloud; image bytes stay on the LAN.
 """
 from __future__ import annotations
 
@@ -16,17 +17,20 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers import config_validation as cv, device_registry as dr
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.storage import Store
 from homeassistant.helpers.typing import ConfigType
 
 from .api import GoveeApi, GoveeAuthError, GoveeError, GoveeNeedsCode, PixelDevice, Session
-from .const import CONF_ACCOUNT_ID, CONF_CLIENT_ID, CONF_ACCOUNT_TOPIC, CONF_BASE_URL, CONF_TOKEN, DOMAIN
-from .effect_server import URL_PATH, async_get_store
+from .const import CONF_ACCOUNT_ID, CONF_ACCOUNT_TOPIC, CONF_CLIENT_ID, CONF_TOKEN, DOMAIN
+from .display import effect_base_url
+from .effect_server import async_get_store
 from .iot import GoveeIot, IotError, write_cert_files
+from .playlist import PlaylistController
 from .services import async_setup_services
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS = [Platform.IMAGE]
+PLATFORMS = [Platform.IMAGE, Platform.SENSOR, Platform.SWITCH]
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 
@@ -36,7 +40,7 @@ class GoveePixelData:
     iot: GoveeIot
     devices: dict[str, PixelDevice]  # by Govee device id
     previews: dict[str, tuple[bytes, float]] = field(default_factory=dict)  # last sent GIF per device
-    listeners: list = field(default_factory=list)
+    playlists: dict[str, PlaylistController] = field(default_factory=dict)  # by Govee device id
 
 
 type GoveePixelConfigEntry = ConfigEntry[GoveePixelData]
@@ -45,19 +49,6 @@ type GoveePixelConfigEntry = ConfigEntry[GoveePixelData]
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     async_setup_services(hass)
     return True
-
-
-def effect_base_url(hass: HomeAssistant, entry: ConfigEntry) -> str:
-    """Base URL the light uses to download effects (must be reachable from the light, plain HTTP is fine)."""
-    if base := entry.options.get(CONF_BASE_URL):
-        return base.rstrip("/")
-    api = hass.config.api
-    scheme = "https" if api.use_ssl else "http"
-    return f"{scheme}://{api.local_ip}:{api.port}"
-
-
-def effect_url(hass: HomeAssistant, entry: ConfigEntry, key: str) -> str:
-    return f"{effect_base_url(hass, entry)}{URL_PATH}/{key}.bin"
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: GoveePixelConfigEntry) -> bool:
@@ -96,9 +87,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: GoveePixelConfigEntry) -
             manufacturer="Govee", model=dev.sku, name=dev.name,
             sw_version=dev.sw_version, hw_version=dev.hw_version)
 
-    entry.runtime_data = GoveePixelData(api, iot, {d.device: d for d in devices})
+    data = entry.runtime_data = GoveePixelData(api, iot, {d.device: d for d in devices})
+    store: Store[dict] = Store(hass, 1, f"{DOMAIN}.{entry.entry_id}.playlists")
+    saved = (await store.async_load() or {}).get("devices", {})
+
+    def save() -> None:
+        store.async_delay_save(lambda: {"devices": {k: c.as_dict() for k, c in data.playlists.items()}}, 1)
+
+    for dev in devices:
+        data.playlists[dev.device] = PlaylistController(hass, entry, dev, saved.get(dev.device), save)
     entry.async_on_unload(entry.add_update_listener(_async_reload))
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    for controller in data.playlists.values():
+        await controller.async_start()
     _LOGGER.debug("Effects will be served from %s", effect_base_url(hass, entry))
     return True
 
@@ -110,5 +111,7 @@ async def _async_reload(hass: HomeAssistant, entry: GoveePixelConfigEntry) -> No
 async def async_unload_entry(hass: HomeAssistant, entry: GoveePixelConfigEntry) -> bool:
     ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if ok:
+        for controller in entry.runtime_data.playlists.values():
+            await controller.async_stop()
         await entry.runtime_data.iot.async_stop()
     return ok

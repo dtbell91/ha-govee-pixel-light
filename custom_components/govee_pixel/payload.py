@@ -129,6 +129,63 @@ def frames_from_image(data: bytes, size: int = 32, fit: str = FIT_CONTAIN, resam
         size, fit, resample, background, max_frames)
 
 
+def encode_gif(frames: list[Frame]) -> bytes:
+    """Frames -> a plain GIF89a (one global palette, no local colour tables, no interlace, loops forever)."""
+    w, h = frames[0].image.size
+    strip = Image.new("RGB", (w, h * len(frames)))
+    for i, f in enumerate(frames):
+        strip.paste(f.image, (0, i * h))
+    palette = strip.quantize(256, method=Image.Quantize.MEDIANCUT, dither=Image.Dither.NONE)
+    indexed = [f.image.quantize(palette=palette, dither=Image.Dither.NONE) for f in frames]
+    buf = io.BytesIO()
+    indexed[0].save(buf, format="GIF", save_all=True, append_images=indexed[1:], loop=0,
+                    duration=[max(20, f.duration) for f in frames], disposal=1, optimize=False)
+    return buf.getvalue()
+
+
+def build_gif_effect(frames: list[Frame]) -> bytes:
+    """The light's native GIF effect: 50 5D + GIF89a (what Govee's own playlist items use)."""
+    return b"\x50\x5d" + encode_gif(frames)
+
+
+def gif_passthrough(data: bytes, size: int) -> bytes | None:
+    """The source as a GIF effect unchanged, if it already is a size x size GIF; else None."""
+    if data[:6] not in (b"GIF89a", b"GIF87a"):
+        return None
+    try:
+        with Image.open(io.BytesIO(data)) as im:
+            if (im.size != (size, size) or getattr(im, "n_frames", 1) > MAX_FRAMES
+                    or "transparency" in im.info):
+                return None
+    except OSError:
+        return None
+    return b"\x50\x5d" + data
+
+
+ENCODER_FRAMES = "frames"  # PNG-frame graffiti effect (50 5E) - verified on the light
+ENCODER_AUTO = "auto"  # GIF (50 5D) when lossless and smaller, raw passthrough of 32x32 GIFs
+
+
+def encode_effect(frames: list[Frame], background: tuple[int, int, int] = (0, 0, 0),
+                  encoder: str = ENCODER_FRAMES, source: bytes | None = None) -> bytes:
+    """Pick the effect encoding for these frames."""
+    if encoder == ENCODER_AUTO:
+        size = frames[0].image.width
+        if source is not None and (raw := gif_passthrough(source, size)) is not None:
+            return raw
+        png = build_effect(frames, background)
+        w, h = frames[0].image.size
+        strip = Image.new("RGB", (w, h * len(frames)))
+        for i, f in enumerate(frames):
+            strip.paste(f.image, (0, i * h))
+        if strip.getcolors(256) is not None:  # <= 256 colours: GIF is lossless
+            gif = build_gif_effect(frames)
+            if len(gif) < len(png):
+                return gif
+        return png
+    return build_effect(frames, background)
+
+
 def preview_gif(frames: list[Frame], scale: int = 8) -> bytes:
     """Upscaled GIF of what was sent (for debugging / an image entity)."""
     big = [f.image.resize((f.image.width * scale, f.image.height * scale), Image.Resampling.NEAREST)

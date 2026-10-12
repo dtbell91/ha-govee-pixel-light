@@ -6,6 +6,13 @@ show_image:
         device:
           integration: govee_pixel
           multiple: true
+    duration:
+      selector:
+        number:
+          min: 0
+          max: 86400
+          unit_of_measurement: s
+          mode: box
     image_path:
       example: /config/www/govee/weather.gif
       selector:
@@ -68,6 +75,13 @@ show_weather:
         device:
           integration: govee_pixel
           multiple: true
+    duration:
+      selector:
+        number:
+          min: 0
+          max: 86400
+          unit_of_measurement: s
+          mode: box
     weather_entity:
       selector:
         entity:
@@ -118,6 +132,13 @@ show_text:
         device:
           integration: govee_pixel
           multiple: true
+    duration:
+      selector:
+        number:
+          min: 0
+          max: 86400
+          unit_of_measurement: s
+          mode: box
     message:
       required: true
       example: Dinner is ready!
@@ -156,6 +177,13 @@ show_animation:
         device:
           integration: govee_pixel
           multiple: true
+    duration:
+      selector:
+        number:
+          min: 0
+          max: 86400
+          unit_of_measurement: s
+          mode: box
     animation:
       required: true
       selector:
@@ -174,3 +202,75 @@ show_animation:
             - homework
             - bedtime
             - heart
+
+playlist_add:
+  fields:
+    device_id:
+      required: true
+      selector:
+        device:
+          integration: govee_pixel
+          multiple: true
+    name:
+      required: true
+      example: weather
+      selector:
+        text:
+    item_type:
+      required: true
+      selector:
+        select:
+          translation_key: item_type
+          options:
+            - image
+            - weather
+            - text
+            - animation
+    options:
+      example: '{"weather_entity": "weather.home"}'
+      selector:
+        object:
+    duration:
+      default: 30
+      selector:
+        number:
+          min: 1
+          max: 65535
+          unit_of_measurement: s
+          mode: box
+    position:
+      selector:
+        number:
+          min: 0
+          max: 19
+          mode: box
+
+playlist_remove:
+  fields:
+    device_id:
+      required: true
+      selector:
+        device:
+          integration: govee_pixel
+          multiple: true
+    name:
+      required: true
+      selector:
+        text:
+
+playlist_clear:
+  fields:
+    device_id: &target
+      required: true
+      selector:
+        device:
+          integration: govee_pixel
+          multiple: true
+
+playlist_resume:
+  fields:
+    device_id: *target
+
+playlist_refresh:
+  fields:
+    device_id: *target

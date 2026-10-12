@@ -4,14 +4,16 @@ Unofficial; not affiliated with or endorsed by Govee.
 
 Shows any picture or animated GIF on a Govee H8630 Gaming Pixel Light (32×32) from Home Assistant
 automations, with no need to create it in the Govee app first. It can also draw live weather,
-scrolling text and built-in animated scenes on the light.
+scrolling text and built-in animated scenes, and run a **playlist** that the light rotates by itself,
+with interruptions (e.g. a doorbell snapshot) that hand back to the playlist afterwards.
 
 ## How it works
 
 1. The image is decoded (PNG/JPEG/GIF/WebP/APNG…), fitted to 32×32, and encoded as the light's
    "graffiti" effect: one PNG per frame, up to 100 frames, each with its own duration.
-2. Home Assistant serves that file at `/api/govee_pixel/effect/<random key>.bin` with the
-   `ETag: "<md5>"` header the light's firmware checks. Keys expire after 10 minutes.
+2. Home Assistant serves that file at `/api/govee_pixel/f/<md5>.bin` with the `ETag: "<md5>"`
+   header the light's firmware checks. One-off images stay available for 10 minutes; playlist files
+   are kept on disk for as long as a playlist uses them.
 3. A `ptUrl` command goes to the light through Govee's AWS IoT MQTT broker, using your account's
    IoT certificate. The light downloads the file from Home Assistant over your LAN and shows it.
    The image never goes to Govee; only the short "fetch this URL" command uses the cloud. (The
@@ -32,10 +34,15 @@ Govee emails you.
 
 This integration runs alongside other Govee integrations. It uses its own login session.
 
-**Options → Effect base URL**: the address the *light* uses to reach Home Assistant. By default
-it is `http://<HA LAN IP>:<port>`. Set it by hand (e.g. `http://192.168.1.10:8123`) if HA uses
-SSL with a certificate the light would not trust, or if the detected IP is wrong. Plain HTTP on
-the LAN works.
+### Options
+
+| Option | |
+|---|---|
+| Effect base URL | The address the *light* uses to reach Home Assistant. By default `http://<HA LAN IP>:<port>`. Set it by hand (e.g. `http://192.168.1.10:8123`) if HA uses SSL with a certificate the light would not trust, or if the detected IP is wrong. Plain HTTP on the LAN works. Keep it short: the light stores playlist URLs in ~128-character slots |
+| Playlist playback | **On the light** (default): one command sends the whole playlist and the light rotates by itself. **From Home Assistant**: HA sends each item in turn (one cloud command per item). If the light rejects a playlist, HA falls back to rotating it automatically |
+| Resume after an interruption | **Re-send playlist** (default, confirmed by the light; cached items are not downloaded again) or **Switch back only** (experimental: just re-selects the light's stored playlist) |
+| Refresh live items every | How often weather / URL / camera items are redrawn (default 15 min). Only items whose picture changed are downloaded again |
+| Image encoding | **PNG frames** (default, verified) or **Automatic** (experimental): also uses the light's native GIF format when that is lossless and smaller, and sends 32×32 GIFs unchanged |
 
 ## Action: `govee_pixel.show_image`
 
@@ -90,7 +97,30 @@ longer text scrolls. The light holds at most 100 frames, so long messages scroll
 One of the built-in animated scenes: `morning`, `bus`, `maths`, `reading`, `art`, `music`,
 `sport`, `playground`, `lunch`, `homework`, `bedtime`, `heart`.
 
-All four actions return `{devices: {<name>: {confirmed, frames, bytes}}}`.
+All four actions return `{devices: {<name>: {confirmed, frames, bytes}}}` and take an optional
+`duration` (seconds): if the light's playlist is playing, what you show stays up that long (default
+60) and then the playlist resumes. `duration: 0` keeps it on screen until
+`govee_pixel.playlist_resume`. With no playlist playing, the image simply stays.
+
+## Playlist
+
+Each light has one playlist of up to 20 items, kept by Home Assistant and played by the light
+itself. Items are any of the four content types above, with the same options as the matching
+`show_*` action, and a duration in seconds (the light rounds animations up to whole loops).
+
+- `switch.<light>_playlist` starts / stops it (stopping clears the screen).
+- `sensor.<light>_playlist_status`: `stopped`, `rotating` (on the light), `rotating_ha` (from Home
+  Assistant), `interrupted`, `paused` or `error`; attributes list the items, when an interruption
+  ends and the last error. (The light does the rotating, so HA does not know which item is on screen.)
+- `govee_pixel.playlist_add`: add an item, or replace the item with the same name (`name`,
+  `item_type`: image/weather/text/animation, `options`, `duration`, optional `position`).
+- `govee_pixel.playlist_remove` (`name`), `govee_pixel.playlist_clear`,
+  `govee_pixel.playlist_resume`, `govee_pixel.playlist_refresh` (redraw everything now).
+
+Changes are sent to the light straight away while the playlist is playing. The light caches items
+by URL and every file's URL is derived from its content, so only new or changed pictures are
+downloaded. Playlist files are served by Home Assistant, so the light needs to be able to reach it
+whenever it (re)loads the playlist.
 
 ## Generating GIF files
 
@@ -107,6 +137,42 @@ python3 scripts/generate_gifs.py animation bedtime
 ```
 
 ## Examples
+
+A playlist (run once, e.g. from Developer tools → Actions), then turn on `switch.<light>_playlist`:
+
+```yaml
+action: govee_pixel.playlist_add
+data:
+  device_id: <your light's device id>
+  name: weather
+  item_type: weather
+  options: {weather_entity: weather.home}
+  duration: 20
+---
+action: govee_pixel.playlist_add
+data:
+  device_id: <your light's device id>
+  name: cat
+  item_type: image
+  options: {image_path: /config/www/govee/cat.gif, resample: nearest}
+  duration: 15
+```
+
+Doorbell: show the camera for 30 seconds, then go back to the playlist:
+
+```yaml
+triggers:
+  - trigger: state
+    entity_id: binary_sensor.doorbell
+    to: "on"
+actions:
+  - action: govee_pixel.show_image
+    data:
+      device_id: <your light's device id>
+      image_entity: camera.front_door
+      fit: cover
+      duration: 30
+```
 
 Live weather whenever it changes:
 

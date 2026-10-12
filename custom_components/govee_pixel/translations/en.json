@@ -39,10 +39,20 @@
   "options": {
     "step": {
       "init": {
-        "title": "Effect download address",
-        "description": "The light downloads each image from Home Assistant over HTTP. Leave empty to use this Home Assistant's LAN IP and port. Set it (for example http://192.168.1.10:8123) if the light cannot reach the default.",
+        "title": "Options",
+        "description": "The light downloads every image and playlist item from Home Assistant over HTTP. Leave the base URL empty to use this Home Assistant's LAN IP and port, or set it (for example http://192.168.1.10:8123) if the light cannot reach the default.",
         "data": {
-          "base_url": "Effect base URL"
+          "base_url": "Effect base URL",
+          "playback": "Playlist playback",
+          "resume": "Resume after an interruption",
+          "refresh_minutes": "Refresh live playlist items every (minutes)",
+          "encoder": "Image encoding"
+        },
+        "data_description": {
+          "playback": "On the light: Home Assistant sends the whole playlist once and the light rotates by itself. From Home Assistant: Home Assistant sends each item in turn (more cloud commands).",
+          "resume": "Re-send the playlist (confirmed by the light; items it already has are not downloaded again), or only switch the light back to its stored playlist (cheaper, experimental).",
+          "refresh_minutes": "Weather, URL and camera items are redrawn this often; the light only downloads items whose picture changed.",
+          "encoder": "PNG frames is verified on the H8630. Automatic also uses the light's native GIF format when that is lossless and smaller (experimental)."
         }
       }
     }
@@ -51,6 +61,24 @@
     "image": {
       "last_image": {
         "name": "Last image"
+      }
+    },
+    "switch": {
+      "playlist": {
+        "name": "Playlist"
+      }
+    },
+    "sensor": {
+      "playlist_status": {
+        "name": "Playlist status",
+        "state": {
+          "stopped": "Stopped",
+          "rotating": "Rotating on the light",
+          "rotating_ha": "Rotating from Home Assistant",
+          "interrupted": "Interrupted",
+          "paused": "Paused",
+          "error": "Error"
+        }
       }
     }
   },
@@ -91,6 +119,32 @@
         "bedtime": "Bedtime",
         "heart": "Heart"
       }
+    },
+    "playback": {
+      "options": {
+        "light": "On the light (recommended)",
+        "home_assistant": "From Home Assistant"
+      }
+    },
+    "resume": {
+      "options": {
+        "repush": "Re-send playlist (recommended)",
+        "mode_packet": "Switch back only (experimental)"
+      }
+    },
+    "encoder": {
+      "options": {
+        "frames": "PNG frames (verified)",
+        "auto": "Automatic: GIF when better (experimental)"
+      }
+    },
+    "item_type": {
+      "options": {
+        "image": "Image",
+        "weather": "Weather",
+        "text": "Text",
+        "animation": "Animation"
+      }
     }
   },
   "services": {
@@ -101,6 +155,10 @@
         "device_id": {
           "name": "Light",
           "description": "Pixel light(s) to show the image on."
+        },
+        "duration": {
+          "name": "Show for",
+          "description": "If the playlist is playing, it resumes after this many seconds (default 60; 0 keeps this on screen until govee_pixel.playlist_resume). Ignored when no playlist is playing."
         },
         "image_path": {
           "name": "File path",
@@ -144,6 +202,10 @@
           "name": "Light",
           "description": "Pixel light(s) to show it on."
         },
+        "duration": {
+          "name": "Show for",
+          "description": "If the playlist is playing, it resumes after this many seconds (default 60; 0 keeps this on screen until govee_pixel.playlist_resume). Ignored when no playlist is playing."
+        },
         "weather_entity": {
           "name": "Weather entity",
           "description": "Take the condition, temperature and unit from this weather entity."
@@ -173,6 +235,10 @@
         "device_id": {
           "name": "Light",
           "description": "Pixel light(s) to show it on."
+        },
+        "duration": {
+          "name": "Show for",
+          "description": "If the playlist is playing, it resumes after this many seconds (default 60; 0 keeps this on screen until govee_pixel.playlist_resume). Ignored when no playlist is playing."
         },
         "message": {
           "name": "Message",
@@ -204,9 +270,87 @@
           "name": "Light",
           "description": "Pixel light(s) to show it on."
         },
+        "duration": {
+          "name": "Show for",
+          "description": "If the playlist is playing, it resumes after this many seconds (default 60; 0 keeps this on screen until govee_pixel.playlist_resume). Ignored when no playlist is playing."
+        },
         "animation": {
           "name": "Animation",
           "description": "Which scene to show."
+        }
+      }
+    },
+    "playlist_add": {
+      "name": "Add or update playlist item",
+      "description": "Add an item to the light's playlist, or replace the item with the same name. Up to 20 items.",
+      "fields": {
+        "device_id": {
+          "name": "Light",
+          "description": "Pixel light(s) whose playlist to change."
+        },
+        "name": {
+          "name": "Name",
+          "description": "Unique name; adding an existing name updates that item."
+        },
+        "item_type": {
+          "name": "Type",
+          "description": "What the item shows."
+        },
+        "options": {
+          "name": "Options",
+          "description": "The same fields as the matching show_* action, e.g. {\"weather_entity\": \"weather.home\"} or {\"image_path\": \"/config/www/govee/cat.gif\"}."
+        },
+        "duration": {
+          "name": "Duration",
+          "description": "Seconds on screen (the light rounds animations up to whole loops)."
+        },
+        "position": {
+          "name": "Position",
+          "description": "0 = first. Default: end of the list (or the item's current place when updating)."
+        }
+      }
+    },
+    "playlist_remove": {
+      "name": "Remove playlist item",
+      "description": "Remove an item by name.",
+      "fields": {
+        "device_id": {
+          "name": "Light",
+          "description": "Pixel light(s) whose playlist to change."
+        },
+        "name": {
+          "name": "Name",
+          "description": "Item to remove."
+        }
+      }
+    },
+    "playlist_clear": {
+      "name": "Clear playlist",
+      "description": "Remove every item (and stop the playlist).",
+      "fields": {
+        "device_id": {
+          "name": "Light",
+          "description": "Pixel light(s) whose playlist to change."
+        }
+      }
+    },
+    "playlist_resume": {
+      "name": "Resume playlist",
+      "description": "Resume the playlist now after an interruption.",
+      "fields": {
+        "device_id": {
+          "name": "Light",
+          "description": "Pixel light(s) whose playlist to change."
+        }
+      }
+    },
+    "playlist_refresh": {
+      "name": "Refresh playlist",
+      "description": "Redraw every item now and re-send the playlist.",
+      "fields": {
+        "device_id": {
+          "name": "Light",
+          "description": "Pixel light(s) whose playlist to change."
         }
       }
     }

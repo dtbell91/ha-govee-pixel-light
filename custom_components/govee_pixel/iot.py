@@ -22,12 +22,18 @@ from cryptography.hazmat.primitives.serialization import pkcs12
 
 _LOGGER = logging.getLogger(__name__)
 
-# V4 ptUrl header (pactType 2 / pactCode 3): FC 01 05 | timeout LE16 (60 s) | isNeedCache 0 | 01 58
-PTURL_HEAD_V4 = bytes([0xFC, 0x01, 0x05, 0x3C, 0x00, 0x00, 0x01, 0x58])
-# The light retries a failing download until the 60 s timeout above, then reports failure.
+# ptUrl V4 header: FC 01 <len(op)+4> | timeout LE16 (60 s) | isNeedCache | len(op) | op
+# op 0x58 = one graffiti/GIF effect, op 0x61 = a looplay playlist file (Govee sends isNeedCache=1 for those).
+OP_EFFECT = 0x58
+OP_PLAYLIST = 0x61
+# The light retries a failing download until that 60 s timeout, then reports failure.
 PTURL_REPLY_TIMEOUT = 75
 # Switch to the DIY/graffiti scene: 33 05 0A FE 00 (sub-mode 0x0A, code 254)
 MODE_PACKET = bytes([0x33, 0x05, 0x0A, 0xFE, 0x00])
+
+
+def pturl_head(op: int, need_cache: bool = False, timeout_s: int = 60) -> bytes:
+    return bytes([0xFC, 0x01, 0x05]) + timeout_s.to_bytes(2, "little") + bytes([int(need_cache), 0x01, op])
 
 
 class IotError(Exception):
@@ -151,14 +157,16 @@ class GoveeIot:
         finally:
             self._pending.pop(tx, None)
 
-    async def async_pt_url(self, topic: str, url: str, timeout: float = PTURL_REPLY_TIMEOUT) -> bool | None:
-        """Tell the light to download and show the effect at `url`.
+    async def async_pt_url(self, topic: str, url: str, timeout: float = PTURL_REPLY_TIMEOUT, *,
+                           op: int = OP_EFFECT, mode_packet: bytes = MODE_PACKET,
+                           need_cache: bool = False) -> bool | None:
+        """Tell the light to download `url` (an effect, or a playlist with op=OP_PLAYLIST) and apply it.
 
         Returns True if the light reports a successful download, False if it reports a failure,
         None if it did not answer in time.
         """
         b64 = lambda b: base64.b64encode(b).decode()  # noqa: E731
-        data = {"value": [b64(PTURL_HEAD_V4), b64(url.encode()), b64(frame20(MODE_PACKET))]}
+        data = {"value": [b64(pturl_head(op, need_cache)), b64(url.encode()), b64(frame20(mode_packet))]}
         reply = await self.async_command(topic, "ptUrl", data, timeout)
         if reply is None:
             return None
