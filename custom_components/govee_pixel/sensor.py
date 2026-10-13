@@ -1,4 +1,4 @@
-"""Playlist status sensor (state + items as attributes)."""
+"""Sensors: playlist status (state + items as attributes) and what the display is showing."""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -9,7 +9,8 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import GoveePixelConfigEntry
-from .entity import PlaylistEntity
+from .device_state import SHOWING_OPTIONS
+from .entity import LightStateEntity, PlaylistEntity
 from .playlist import (
     STATUS_ERROR, STATUS_HA, STATUS_INTERRUPTED, STATUS_LIGHT, STATUS_PAUSED, STATUS_STOPPED,
 )
@@ -18,6 +19,7 @@ from .playlist import (
 async def async_setup_entry(hass: HomeAssistant, entry: GoveePixelConfigEntry,
                             async_add_entities: AddConfigEntryEntitiesCallback) -> None:
     async_add_entities(PlaylistStatus(c, "playlist_status") for c in entry.runtime_data.playlists.values())
+    async_add_entities(DisplaySensor(entry, dev_id) for dev_id in entry.runtime_data.devices)
 
 
 def _ts(value: float | None) -> str | None:
@@ -47,3 +49,23 @@ class PlaylistStatus(PlaylistEntity, SensorEntity):
             "light_mode": c.light_mode,
             "reapply_pending": c.reapply_pending,
         }
+
+
+class DisplaySensor(LightStateEntity, SensorEntity):
+    """What the light shows, from its pushed mode echo: off / playlist / image (ours) / govee_scene."""
+
+    _attr_device_class = SensorDeviceClass.ENUM
+    _attr_options = SHOWING_OPTIONS
+    _attr_icon = "mdi:television-ambient-light"
+
+    def __init__(self, entry: GoveePixelConfigEntry, dev_id: str) -> None:
+        super().__init__(entry, dev_id, "showing")
+
+    @property
+    def native_value(self) -> str | None:
+        return self.state_.showing
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        return {"mode": self.state_.mode.hex() if self.state_.mode else None,
+                "last_report": _ts(self.state_.last_report)}

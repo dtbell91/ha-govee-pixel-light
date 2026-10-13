@@ -71,6 +71,7 @@ class PlaylistController:
         self._listeners: list[Callable[[], None]] = []
         self._resume_cancel: CALLBACK_TYPE | None = None
         self._refresh_cancel: CALLBACK_TYPE | None = None
+        self._state_cancel: CALLBACK_TYPE | None = None
         self._rotation: asyncio.Task | None = None
 
     # ---------- state ----------
@@ -108,16 +109,18 @@ class PlaylistController:
         minutes = self.entry.options.get(CONF_REFRESH_MINUTES, DEFAULT_REFRESH_MINUTES)
         self._refresh_cancel = async_track_time_interval(
             self.hass, self._async_refresh_tick, timedelta(minutes=max(1, minutes)))
+        if (state := self.entry.runtime_data.states.get(self.dev.device)) is not None:
+            self._state_cancel = state.async_add_listener(self._on_light_state)
         if self.active and self.items:
             # The light keeps its playlist file across restarts; re-check content and what it shows.
             self.status = STATUS_HA if self.playback == PLAYBACK_HA else STATUS_LIGHT
             self.hass.async_create_background_task(self._async_refresh_tick(), f"govee_pixel refresh {self.dev.name}")
 
     async def async_stop(self) -> None:
-        for cancel in (self._resume_cancel, self._refresh_cancel):
+        for cancel in (self._resume_cancel, self._refresh_cancel, self._state_cancel):
             if cancel:
                 cancel()
-        self._resume_cancel = self._refresh_cancel = None
+        self._resume_cancel = self._refresh_cancel = self._state_cancel = None
         await self._async_stop_rotation()
 
     # ---------- editing ----------
@@ -281,6 +284,19 @@ class PlaylistController:
             self.light_mode = state["mode"].hex() if state["mode"] else None
             self._changed()
         return state
+
+    @callback
+    def _on_light_state(self) -> None:
+        """The light pushed a state change: mirror it, and catch up as soon as it is switched back on."""
+        state = self.entry.runtime_data.states[self.dev.device]
+        was_on = self.light_on
+        self.light_on = state.on
+        self.light_mode = state.mode.hex() if state.mode else None
+        self._changed()
+        if (was_on is False and state.on and self.active and self.items
+                and self.interrupt_until is None and self.status != STATUS_PAUSED):
+            self.hass.async_create_background_task(
+                self._async_refresh_tick(), f"govee_pixel catch-up {self.dev.name}")
 
     @staticmethod
     def _shows_ours(mode: bytes | None) -> bool:

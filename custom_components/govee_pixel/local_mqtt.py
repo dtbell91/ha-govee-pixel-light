@@ -12,6 +12,7 @@ light itself, which bridges it to Home Assistant's broker under a topic prefix (
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 
 from homeassistant.components import mqtt
@@ -38,13 +39,18 @@ class LocalMqttLink(CommandLink):
         self.cmd_topic = f"{self.prefix}cmd"
         self._unsubscribe: list = []
         self.bridge_up: bool | None = None  # None until the retained bridge state arrives
+        self.light_connected: bool | None = None  # from the light's MQTT connect message / last will
+        self._broker_connected = False
         self._bridge_seen = asyncio.Event()
 
     async def async_start(self, timeout: float = 10) -> None:
         if not await mqtt.async_wait_for_mqtt_client(self._hass):
             raise IotError("Home Assistant's MQTT integration is not set up")
+        self._broker_connected = mqtt.is_connected(self._hass)
         self._unsubscribe = [
+            mqtt.async_subscribe_connection_status(self._hass, self._on_broker),
             await mqtt.async_subscribe(self._hass, f"{self.prefix}state", self._on_state, qos=0),
+            await mqtt.async_subscribe(self._hass, f"{self.prefix}lwt", self._on_lwt, qos=0),
             await mqtt.async_subscribe(self._hass, f"{self.prefix}bridge/state", self._on_bridge, qos=0),
         ]
         # HA sends subscriptions in debounced batches once connected; the retained bridge state
@@ -63,13 +69,36 @@ class LocalMqttLink(CommandLink):
     def _on_state(self, msg: mqtt.ReceiveMessage) -> None:
         self._handle_reply(msg.payload)
 
+    @property
+    def available(self) -> bool:
+        return self._broker_connected and self.bridge_up is not False and self.light_connected is not False
+
+    @callback
+    def _on_broker(self, connected: bool) -> None:
+        self._broker_connected = connected
+        self._availability_changed()
+
     @callback
     def _on_bridge(self, msg: mqtt.ReceiveMessage) -> None:
         up = str(msg.payload).strip() == "1"
         if up != self.bridge_up:
             _LOGGER.debug("Light's MQTT bridge (%s) is %s", self.prefix, "up" if up else "down")
-        self.bridge_up = up
+            self.bridge_up = up
+            self._availability_changed()
         self._bridge_seen.set()
+
+    @callback
+    def _on_lwt(self, msg: mqtt.ReceiveMessage) -> None:
+        """govee_iot publishes {"state": {"reported": {"connected": "true", ...}}} on connect; its last will
+        carries "false" when it drops off the light's broker."""
+        try:
+            connected = json.loads(msg.payload)["state"]["reported"]["connected"]
+        except (ValueError, KeyError, TypeError):
+            return
+        connected = str(connected).lower() == "true"
+        if connected != self.light_connected:
+            self.light_connected = connected
+            self._availability_changed()
 
     async def _async_wait_connected(self, timeout: float = 15) -> None:
         deadline = self._loop.time() + timeout

@@ -72,11 +72,11 @@
           "reclaim": "Re-apply the playlist if the light shows something else"
         },
         "data_description": {
-          "playback": "On the light: Home Assistant sends the whole playlist once and the light rotates by itself. From Home Assistant: Home Assistant sends each item in turn (more cloud commands).",
+          "playback": "On the light: Home Assistant sends the whole playlist once and the light rotates by itself. From Home Assistant: Home Assistant sends each item in turn (one command per item).",
           "resume": "Re-send the playlist (confirmed by the light; items it already has are not downloaded again), or only switch the light back to its stored playlist (cheaper, experimental).",
           "refresh_minutes": "Weather, URL and camera items are redrawn this often; the light only downloads items whose picture changed.",
           "encoder": "PNG frames is verified on the H8630. Automatic also uses the light's native GIF format when that is lossless and smaller (experimental).",
-          "reclaim": "Checked at each refresh: if the light is on but not showing the playlist (e.g. after a power cut, or a scene picked in the Govee app), the playlist is sent again. Automatic re-sends wait while the light is off."
+          "reclaim": "Checked at each refresh and as soon as the light is switched back on: if the light is on but not showing the playlist (e.g. after a power cut, or a scene picked in the Govee app), the playlist is sent again. Automatic re-sends wait while the light is off."
         }
       }
     }
@@ -102,6 +102,31 @@
           "interrupted": "Interrupted",
           "paused": "Paused",
           "error": "Error"
+        }
+      },
+      "showing": {
+        "name": "Display",
+        "state": {
+          "off": "Off",
+          "playlist": "Playlist",
+          "image": "Image from Home Assistant",
+          "govee_scene": "Govee scene"
+        }
+      }
+    },
+    "notify": {
+      "message": {
+        "name": "Message"
+      }
+    },
+    "light": {
+      "light": {
+        "state_attributes": {
+          "effect": {
+            "state": {
+              "Playlist": "Playlist"
+            }
+          }
         }
       }
     }

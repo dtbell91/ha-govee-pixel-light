@@ -16,6 +16,7 @@ import os
 import ssl
 import time
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 
 import paho.mqtt.client as mqtt
@@ -77,6 +78,8 @@ class CommandLink:
     def __init__(self, loop: asyncio.AbstractEventLoop) -> None:
         self._loop = loop
         self._pending: dict[str, asyncio.Future] = {}
+        self._report_listeners: list[Callable[[dict], None]] = []
+        self._availability_listeners: list[Callable[[], None]] = []
 
     async def _async_wait_connected(self) -> None:
         raise NotImplementedError
@@ -87,13 +90,36 @@ class CommandLink:
     async def async_stop(self) -> None:
         raise NotImplementedError
 
+    @property
+    def available(self) -> bool:
+        """Whether commands can currently reach the light."""
+        return True
+
+    def async_add_report_listener(self, cb: Callable[[dict], None]) -> Callable[[], None]:
+        """Call `cb(payload)` (on the event loop) for every message from the light: replies and unsolicited
+        reports alike (e.g. {"cmd": "brightness", "state": {"brightness": 90}} after any change)."""
+        self._report_listeners.append(cb)
+        return lambda: self._report_listeners.remove(cb)
+
+    def async_add_availability_listener(self, cb: Callable[[], None]) -> Callable[[], None]:
+        self._availability_listeners.append(cb)
+        return lambda: self._availability_listeners.remove(cb)
+
+    def _availability_changed(self) -> None:
+        for cb in list(self._availability_listeners):
+            cb()
+
     def _handle_reply(self, raw: bytes | str) -> None:
         try:
             payload = json.loads(raw)
         except ValueError:
             return
-        if isinstance(payload, dict) and (tx := payload.get("transaction")):
+        if not isinstance(payload, dict):
+            return
+        if tx := payload.get("transaction"):
             self._resolve(tx, payload)
+        for cb in list(self._report_listeners):
+            cb(payload)
 
     def _resolve(self, tx: str, payload: dict) -> None:
         fut = self._pending.pop(tx, None)
@@ -178,6 +204,14 @@ class CommandLink:
         b64 = lambda b: base64.b64encode(frame20(b)).decode()  # noqa: E731
         await self.async_command(topic, "ptReal", {"command": [b64(f) for f in frames]}, timeout=0.1)
 
+    async def async_set_power(self, topic: str, on: bool) -> None:
+        """33 01 01 / 33 01 00. The light then reports its full status."""
+        await self.async_pt_real(topic, [bytes([0x33, 0x01, 0x01 if on else 0x00])])
+
+    async def async_set_brightness(self, topic: str, percent: int) -> None:
+        """33 04 <1-100>. The light then reports {"cmd": "brightness", "state": {"brightness": n}}."""
+        await self.async_pt_real(topic, [bytes([0x33, 0x04, max(1, min(100, int(percent)))])])
+
 
 class GoveeIot(CommandLink):
     """Commands via Govee's AWS IoT broker, authenticated with the account's IoT certificate."""
@@ -206,10 +240,20 @@ class GoveeIot(CommandLink):
             return
         if self._account_topic:
             client.subscribe(self._account_topic, qos=0)
-        self._loop.call_soon_threadsafe(self._connected.set)
+        self._loop.call_soon_threadsafe(self._set_connected, True)
 
     def _on_disconnect(self, client, userdata, *args):
-        self._loop.call_soon_threadsafe(self._connected.clear)
+        self._loop.call_soon_threadsafe(self._set_connected, False)
+
+    def _set_connected(self, connected: bool) -> None:
+        if connected == self._connected.is_set():
+            return
+        (self._connected.set if connected else self._connected.clear)()
+        self._availability_changed()
+
+    @property
+    def available(self) -> bool:
+        return self._connected.is_set()
 
     def _on_message(self, client, userdata, msg):
         self._loop.call_soon_threadsafe(self._handle_reply, msg.payload)

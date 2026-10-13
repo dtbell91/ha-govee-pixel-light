@@ -6,9 +6,9 @@
   "config_flow": true,
   "dependencies": ["http", "network"],
   "documentation": "https://github.com/dtbell91/ha-govee-pixel-light",
-  "iot_class": "cloud_push",
+  "iot_class": "local_push",
   "issue_tracker": "https://github.com/dtbell91/ha-govee-pixel-light/issues",
   "loggers": ["custom_components.govee_pixel"],
   "requirements": ["paho-mqtt>=2.0.0"],
-  "version": "0.4.0"
+  "version": "0.5.0"
 }

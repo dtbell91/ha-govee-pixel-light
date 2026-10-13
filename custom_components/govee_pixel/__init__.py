@@ -26,6 +26,7 @@ from .const import (
     CONF_ACCOUNT_ID, CONF_ACCOUNT_TOPIC, CONF_CLIENT_ID, CONF_CONNECTION, CONF_DEVICE_ID, CONF_HW_VERSION,
     CONF_SKU, CONF_SW_VERSION, CONF_TOKEN, CONF_TOPIC_PREFIX, CONNECTION_LOCAL, DOMAIN, LOCAL_PANEL_SIDE,
 )
+from .device_state import DeviceState
 from .display import effect_base_url
 from .effect_server import async_get_store
 from .iot import CommandLink, GoveeIot, IotError, write_cert_files
@@ -34,7 +35,7 @@ from .services import async_setup_services
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS = [Platform.IMAGE, Platform.SENSOR, Platform.SWITCH]
+PLATFORMS = [Platform.IMAGE, Platform.LIGHT, Platform.NOTIFY, Platform.SENSOR, Platform.SWITCH]
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 
@@ -45,6 +46,7 @@ class GoveePixelData:
     devices: dict[str, PixelDevice]  # by Govee device id
     previews: dict[str, tuple[bytes, float]] = field(default_factory=dict)  # last sent GIF per device
     playlists: dict[str, PlaylistController] = field(default_factory=dict)  # by Govee device id
+    states: dict[str, DeviceState] = field(default_factory=dict)  # live light state, by Govee device id
 
 
 type GoveePixelConfigEntry = ConfigEntry[GoveePixelData]
@@ -119,6 +121,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: GoveePixelConfigEntry) -
             sw_version=dev.sw_version, hw_version=dev.hw_version)
 
     data = entry.runtime_data = GoveePixelData(api, iot, {d.device: d for d in devices})
+    for dev in devices:
+        state = data.states[dev.device] = DeviceState(dev.device)
+        entry.async_on_unload(iot.async_add_report_listener(state.async_handle_report))
     store: Store[dict] = Store(hass, 1, f"{DOMAIN}.{entry.entry_id}.playlists")
     saved = (await store.async_load() or {}).get("devices", {})
 
@@ -131,8 +136,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: GoveePixelConfigEntry) -
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     for controller in data.playlists.values():
         await controller.async_start()
+    for dev in devices:
+        # Seed the live state; from here on the light's pushed reports keep it current.
+        hass.async_create_background_task(_async_seed_state(iot, dev), f"govee_pixel state {dev.name}")
     _LOGGER.debug("Effects will be served from %s", effect_base_url(hass, entry))
     return True
+
+
+async def _async_seed_state(iot: CommandLink, dev: PixelDevice) -> None:
+    try:
+        await iot.async_status_reply(dev.topic)
+    except IotError as err:
+        _LOGGER.debug("%s: initial status query failed: %s", dev.name, err)
 
 
 async def _async_reload(hass: HomeAssistant, entry: GoveePixelConfigEntry) -> None:
