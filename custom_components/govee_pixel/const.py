@@ -13,6 +13,16 @@ CONF_PLAYBACK = "playback"
 CONF_RESUME = "resume"
 CONF_REFRESH_MINUTES = "refresh_minutes"
 CONF_RECLAIM = "reclaim"
+CONF_CONNECTION = "connection"
+CONF_TOPIC_PREFIX = "topic_prefix"
+CONF_DEVICE_ID = "device_id"
+CONF_SKU = "sku"
+CONF_SW_VERSION = "sw_version"
+CONF_HW_VERSION = "hw_version"
+
+CONNECTION_CLOUD = "cloud"
+CONNECTION_LOCAL = "local_mqtt"
+LOCAL_PANEL_SIDE = 32  # H8630: 32x32
 
 PLAYBACK_LIGHT = "light"
 PLAYBACK_HA = "home_assistant"

@@ -2,11 +2,30 @@
   "config": {
     "step": {
       "user": {
+        "title": "Connect the light",
+        "description": "How should Home Assistant send commands to the light?",
+        "menu_options": {
+          "cloud": "Govee account (commands via Govee's cloud)",
+          "local": "Local MQTT (light runs the local-MQTT custom firmware; no cloud)"
+        }
+      },
+      "cloud": {
         "title": "Govee account",
         "description": "Log in with the Govee Home account that owns the pixel light. Images are served from Home Assistant on your LAN; only the short 'show this' command goes through Govee's cloud.",
         "data": {
           "email": "Email",
           "password": "Password"
+        }
+      },
+      "local": {
+        "title": "Local MQTT",
+        "description": "For a light running the local-MQTT custom firmware, bridged to this Home Assistant's MQTT broker. Home Assistant's MQTT integration must be set up. The light is checked by asking it for its status on `<prefix>cmd` and waiting for its reply on `<prefix>state`.",
+        "data": {
+          "topic_prefix": "Topic prefix",
+          "name": "Name"
+        },
+        "data_description": {
+          "topic_prefix": "Must match MQTT_PREFIX in the light's bridge settings (default govee/h8630/)."
         }
       },
       "code": {
@@ -28,12 +47,15 @@
       "invalid_auth": "Invalid email or password.",
       "invalid_code": "The verification code was not accepted.",
       "cannot_connect": "Could not reach Govee's servers.",
-      "no_devices": "No Govee pixel light (H8630) found on this account."
+      "no_devices": "No Govee pixel light (H8630) found on this account.",
+      "mqtt_unavailable": "Home Assistant's MQTT integration is not set up or not connected, or the light's bridge reports it is down.",
+      "no_reply": "The light did not answer on that topic prefix. Check the prefix and that the light's bridge is connected (<prefix>bridge/state = 1)."
     },
     "abort": {
-      "already_configured": "This Govee account is already configured.",
+      "already_configured": "This Govee account or light is already configured.",
       "reauth_successful": "Logged in again.",
-      "unique_id_mismatch": "That is a different Govee account."
+      "unique_id_mismatch": "That is a different Govee account.",
+      "device_in_cloud_entry": "This light is already set up through a Govee account entry. Remove that entry first to control it over local MQTT."
     }
   },
   "options": {

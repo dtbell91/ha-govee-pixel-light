@@ -21,6 +21,9 @@ with interruptions (e.g. a doorbell snapshot) that hand back to the playlist aft
 4. The light replies with the download result, so the action fails with an error when the light
    could not fetch the file.
 
+With [local MQTT](#local-mqtt-no-cloud) the command in step 3 goes through Home Assistant's own
+MQTT broker instead, and nothing uses Govee's cloud.
+
 ## Install
 
 **HACS:** add this repository as a custom repository (type: Integration), install, and restart.
@@ -28,18 +31,38 @@ with interruptions (e.g. a doorbell snapshot) that hand back to the playlist aft
 **Manual:** copy `custom_components/govee_pixel/` to `/config/custom_components/govee_pixel/` and
 restart Home Assistant.
 
-Then go to Settings → Devices & services → Add integration → **Govee Pixel Light**,
-and log in with your Govee Home account. The first login from a new client asks for the code
-Govee emails you.
+Then go to Settings → Devices & services → Add integration → **Govee Pixel Light**, choose
+**Govee account**, and log in with your Govee Home account. The first login from a new client asks
+for the code Govee emails you.
 
 This integration runs alongside other Govee integrations. It uses its own login session.
+
+### Local MQTT (no cloud)
+
+For a light running local-MQTT custom firmware: the light's MQTT client is pointed at a broker on
+the light itself, which bridges to Home Assistant's MQTT broker. Choose **Local MQTT** when adding
+the integration and enter the topic prefix the light's bridge uses (default `govee/h8630/`). Home
+Assistant's MQTT integration must be set up. No Govee account is needed.
+
+The light is expected on these topics (under the prefix):
+
+| Topic | |
+|---|---|
+| `cmd` | Commands to the light (the same JSON it receives from Govee's broker) |
+| `state` | The light's replies and status reports |
+| `lwt` | The light's MQTT last will |
+| `bridge/state` | `1` / `0`, retained: whether the light's bridge to this broker is connected |
+
+Setup asks the light for its status and uses its reply to identify it. A light set up through a
+Govee account entry has to be removed from that entry first. Playlists belong to the entry, so
+recreate them on the local entry.
 
 ### Options
 
 | Option | |
 |---|---|
 | Effect base URL | The address the *light* uses to reach Home Assistant. By default `http://<HA LAN IP>:<port>`. Set it by hand (e.g. `http://192.168.1.10:8123`) if HA uses SSL with a certificate the light would not trust, or if the detected IP is wrong. Plain HTTP on the LAN works. Keep it short: the light stores playlist URLs in ~128-character slots |
-| Playlist playback | **On the light** (default): one command sends the whole playlist and the light rotates by itself. **From Home Assistant**: HA sends each item in turn (one cloud command per item). If the light rejects a playlist, HA falls back to rotating it automatically |
+| Playlist playback | **On the light** (default): one command sends the whole playlist and the light rotates by itself. **From Home Assistant**: HA sends each item in turn (one MQTT command per item). If the light rejects a playlist, HA falls back to rotating it automatically |
 | Resume after an interruption | **Re-send playlist** (default, confirmed by the light; cached items are not downloaded again) or **Switch back only** (experimental: just re-selects the light's stored playlist) |
 | Re-apply the playlist if the light shows something else | On by default. At each refresh HA asks the light what it is showing; if it is on but not showing the playlist (after a power cut the light does not restore its playlist mode, or a scene was picked in the Govee app), the playlist is sent again. Turn off if you want scenes chosen elsewhere to stay |
 | Refresh live items every | How often weather / URL / camera items are redrawn (default 15 min). Only items whose picture changed are downloaded again |

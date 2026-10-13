@@ -1,4 +1,4 @@
-"""Config flow: Govee account login (with emailed verification code) and effect base URL option."""
+"""Config flow: Govee account login (with emailed verification code) or local MQTT, and options."""
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -6,19 +6,23 @@ from typing import Any
 
 import voluptuous as vol
 
-from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResult, OptionsFlow
-from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
+from homeassistant.config_entries import ConfigEntry, ConfigEntryState, ConfigFlow, ConfigFlowResult, OptionsFlow
+from homeassistant.const import CONF_EMAIL, CONF_NAME, CONF_PASSWORD
 from homeassistant.core import callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.selector import SelectSelector, SelectSelectorConfig
 
 from .api import GoveeApi, GoveeAuthError, GoveeError, GoveeNeedsCode
 from .const import (
-    CONF_ACCOUNT_ID, CONF_ACCOUNT_TOPIC, CONF_BASE_URL, CONF_CLIENT_ID, CONF_CODE, CONF_ENCODER, CONF_PLAYBACK,
-    CONF_RECLAIM, CONF_REFRESH_MINUTES, CONF_RESUME, CONF_TOKEN, DEFAULT_REFRESH_MINUTES, DOMAIN, PLAYBACK_HA,
+    CONF_ACCOUNT_ID, CONF_ACCOUNT_TOPIC, CONF_BASE_URL, CONF_CLIENT_ID, CONF_CODE, CONF_CONNECTION, CONF_DEVICE_ID,
+    CONF_ENCODER, CONF_HW_VERSION, CONF_PLAYBACK, CONF_RECLAIM, CONF_REFRESH_MINUTES, CONF_RESUME, CONF_SKU,
+    CONF_SW_VERSION, CONF_TOKEN, CONF_TOPIC_PREFIX, CONNECTION_LOCAL, DEFAULT_REFRESH_MINUTES, DOMAIN, PLAYBACK_HA,
     PLAYBACK_LIGHT, RESUME_MODE_PACKET, RESUME_REPUSH,
 )
+from .iot import IotError
 from .payload import ENCODER_AUTO, ENCODER_FRAMES
+
+DEFAULT_LOCAL_NAME = "Govee Pixel Light"
 
 
 class GoveePixelConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -58,6 +62,9 @@ class GoveePixelConfigFlow(ConfigFlow, domain=DOMAIN):
         return self.async_create_entry(title=self._api.email, data=data), None
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        return self.async_show_menu(step_id="user", menu_options=["cloud", "local"])
+
+    async def async_step_cloud(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         errors = {}
         if user_input is not None:
             self._api = GoveeApi(async_get_clientsession(self.hass), user_input[CONF_EMAIL].strip(),
@@ -66,8 +73,42 @@ class GoveePixelConfigFlow(ConfigFlow, domain=DOMAIN):
             if result:
                 return result
             errors["base"] = error
-        return self.async_show_form(step_id="user", errors=errors, data_schema=vol.Schema({
+        return self.async_show_form(step_id="cloud", errors=errors, data_schema=vol.Schema({
             vol.Required(CONF_EMAIL): str, vol.Required(CONF_PASSWORD): str}))
+
+    async def async_step_local(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        """A light running the local-MQTT custom firmware, bridged to Home Assistant's broker."""
+        from .local_mqtt import DEFAULT_TOPIC_PREFIX, LocalMqttLink  # late import: needs the mqtt component
+
+        errors = {}
+        if user_input is not None:
+            link = LocalMqttLink(self.hass, user_input[CONF_TOPIC_PREFIX])
+            reply = None
+            try:
+                await link.async_start()
+                reply = await link.async_status_reply(link.cmd_topic)
+            except IotError:
+                errors["base"] = "mqtt_unavailable"
+            finally:
+                await link.async_stop()
+            if not errors and not (reply and reply.get("device")):
+                errors["base"] = "no_reply"
+            if not errors:
+                device = reply["device"]
+                await self.async_set_unique_id(device)
+                self._abort_if_unique_id_configured()
+                if any(device in e.runtime_data.devices for e in self._async_current_entries()
+                       if e.state is ConfigEntryState.LOADED):
+                    return self.async_abort(reason="device_in_cloud_entry")
+                return self.async_create_entry(title=user_input[CONF_NAME].strip() or DEFAULT_LOCAL_NAME, data={
+                    CONF_CONNECTION: CONNECTION_LOCAL, CONF_TOPIC_PREFIX: link.prefix, CONF_DEVICE_ID: device,
+                    CONF_SKU: reply.get("sku") or "H8630", CONF_SW_VERSION: reply.get("softVersion", ""),
+                    CONF_HW_VERSION: reply.get("wifiHardVersion", "")})
+        defaults = user_input or {}
+        return self.async_show_form(step_id="local", errors=errors, data_schema=vol.Schema({
+            vol.Required(CONF_TOPIC_PREFIX, default=defaults.get(CONF_TOPIC_PREFIX, DEFAULT_TOPIC_PREFIX)): str,
+            vol.Required(CONF_NAME, default=defaults.get(CONF_NAME, DEFAULT_LOCAL_NAME)): str,
+        }))
 
     async def async_step_code(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         errors = {}

@@ -1,7 +1,7 @@
 {
   "domain": "govee_pixel",
   "name": "Govee Pixel Light",
-  "after_dependencies": ["camera", "image"],
+  "after_dependencies": ["camera", "image", "mqtt"],
   "codeowners": ["@dtbell91"],
   "config_flow": true,
   "dependencies": ["http", "network"],
@@ -10,5 +10,5 @@
   "issue_tracker": "https://github.com/dtbell91/ha-govee-pixel-light/issues",
   "loggers": ["custom_components.govee_pixel"],
   "requirements": ["paho-mqtt>=2.0.0"],
-  "version": "0.3.1"
+  "version": "0.4.0"
 }

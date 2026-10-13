@@ -1,9 +1,10 @@
 """Govee Pixel Light (H8630): show images, GIFs and playlists from Home Assistant.
 
 Pipeline: content -> 32x32 effect file (PNG frames or GIF) -> served by HA with an MD5 ETag
--> `ptUrl` command over Govee's AWS IoT MQTT -> the light downloads it from HA over the LAN.
+-> `ptUrl` command over MQTT -> the light downloads it from HA over the LAN.
 Playlists use the light's own rotation: HA serves a playlist file plus one file per item.
-Only the small trigger commands touch Govee's cloud; image bytes stay on the LAN.
+The MQTT commands go either through Govee's AWS IoT broker (Govee account) or, for lights running
+the local-MQTT custom firmware, through Home Assistant's own broker with no cloud at all.
 """
 from __future__ import annotations
 
@@ -21,10 +22,13 @@ from homeassistant.helpers.storage import Store
 from homeassistant.helpers.typing import ConfigType
 
 from .api import GoveeApi, GoveeAuthError, GoveeError, GoveeNeedsCode, PixelDevice, Session
-from .const import CONF_ACCOUNT_ID, CONF_ACCOUNT_TOPIC, CONF_CLIENT_ID, CONF_TOKEN, DOMAIN
+from .const import (
+    CONF_ACCOUNT_ID, CONF_ACCOUNT_TOPIC, CONF_CLIENT_ID, CONF_CONNECTION, CONF_DEVICE_ID, CONF_HW_VERSION,
+    CONF_SKU, CONF_SW_VERSION, CONF_TOKEN, CONF_TOPIC_PREFIX, CONNECTION_LOCAL, DOMAIN, LOCAL_PANEL_SIDE,
+)
 from .display import effect_base_url
 from .effect_server import async_get_store
-from .iot import GoveeIot, IotError, write_cert_files
+from .iot import CommandLink, GoveeIot, IotError, write_cert_files
 from .playlist import PlaylistController
 from .services import async_setup_services
 
@@ -36,8 +40,8 @@ CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 @dataclass
 class GoveePixelData:
-    api: GoveeApi
-    iot: GoveeIot
+    api: GoveeApi | None  # None for local-MQTT entries
+    iot: CommandLink
     devices: dict[str, PixelDevice]  # by Govee device id
     previews: dict[str, tuple[bytes, float]] = field(default_factory=dict)  # last sent GIF per device
     playlists: dict[str, PlaylistController] = field(default_factory=dict)  # by Govee device id
@@ -51,7 +55,9 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     return True
 
 
-async def async_setup_entry(hass: HomeAssistant, entry: GoveePixelConfigEntry) -> bool:
+async def _async_setup_cloud(
+    hass: HomeAssistant, entry: GoveePixelConfigEntry,
+) -> tuple[GoveeApi, CommandLink, list[PixelDevice]]:
     api = GoveeApi(async_get_clientsession(hass), entry.data[CONF_EMAIL], entry.data[CONF_PASSWORD],
                    entry.data.get(CONF_CLIENT_ID))
     api.session = Session(entry.data[CONF_TOKEN], entry.data[CONF_ACCOUNT_ID],
@@ -78,6 +84,31 @@ async def async_setup_entry(hass: HomeAssistant, entry: GoveePixelConfigEntry) -
         await iot.async_start()
     except IotError as err:
         raise ConfigEntryNotReady(str(err)) from err
+    return api, iot, devices
+
+
+async def _async_setup_local(
+    hass: HomeAssistant, entry: GoveePixelConfigEntry,
+) -> tuple[None, CommandLink, list[PixelDevice]]:
+    from .local_mqtt import LocalMqttLink  # late import: only local entries need the mqtt component
+
+    link = LocalMqttLink(hass, entry.data[CONF_TOPIC_PREFIX])
+    try:
+        await link.async_start()
+    except IotError as err:
+        raise ConfigEntryNotReady(str(err)) from err
+    device = PixelDevice(
+        device=entry.data[CONF_DEVICE_ID], sku=entry.data[CONF_SKU], name=entry.title, topic=link.cmd_topic,
+        width=LOCAL_PANEL_SIDE, height=LOCAL_PANEL_SIDE,
+        sw_version=entry.data.get(CONF_SW_VERSION, ""), hw_version=entry.data.get(CONF_HW_VERSION, ""))
+    return None, link, [device]
+
+
+async def async_setup_entry(hass: HomeAssistant, entry: GoveePixelConfigEntry) -> bool:
+    if entry.data.get(CONF_CONNECTION) == CONNECTION_LOCAL:
+        api, iot, devices = await _async_setup_local(hass, entry)
+    else:
+        api, iot, devices = await _async_setup_cloud(hass, entry)
 
     async_get_store(hass)
     dev_reg = dr.async_get(hass)

@@ -1,8 +1,10 @@
-"""Govee AWS IoT MQTT link: sends the `ptUrl` command and waits for the light's download result.
+"""MQTT command link to the light: sends `ptUrl`/`status`/`ptReal` and waits for its replies.
 
 The light only installs a custom image by downloading it (ptUrl); the URL may point anywhere on
 the LAN as long as the response carries `ETag: "<md5 of body>"`. The command itself has to go
-through Govee's MQTT broker: the light's LAN API has no ptUrl handler.
+over MQTT: the light's LAN API has no ptUrl handler. Two transports share the protocol here:
+`GoveeIot` (Govee's AWS IoT broker, account certificate) and `local_mqtt.LocalMqttLink` (Home
+Assistant's own broker, for lights running the local-MQTT custom firmware).
 """
 from __future__ import annotations
 
@@ -65,45 +67,33 @@ def write_cert_files(directory: Path, p12: bytes, password: str) -> tuple[str, s
     return str(cert_path), str(key_path)
 
 
-class GoveeIot:
-    def __init__(self, loop: asyncio.AbstractEventLoop, endpoint: str, cert: str, key: str,
-                 account_id: str, account_topic: str) -> None:
+class CommandLink:
+    """The light's MQTT request/reply protocol, independent of how messages are carried.
+
+    Subclasses publish via `_async_publish`, ensure a live connection in `_async_wait_connected`
+    and feed every message from the light's reply topic to `_handle_reply` (on the event loop).
+    """
+
+    def __init__(self, loop: asyncio.AbstractEventLoop) -> None:
         self._loop = loop
-        self._endpoint = endpoint
-        self._cert, self._key = cert, key
-        self._account_topic = account_topic
         self._pending: dict[str, asyncio.Future] = {}
-        self._connected = asyncio.Event()
-        client_id = f"AP/{account_id}/{uuid.uuid4().hex}"
+
+    async def _async_wait_connected(self) -> None:
+        raise NotImplementedError
+
+    async def _async_publish(self, topic: str, payload: str) -> None:
+        raise NotImplementedError
+
+    async def async_stop(self) -> None:
+        raise NotImplementedError
+
+    def _handle_reply(self, raw: bytes | str) -> None:
         try:
-            self._client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=client_id)
-        except AttributeError:  # paho-mqtt < 2
-            self._client = mqtt.Client(client_id=client_id)
-        self._client.on_connect = self._on_connect
-        self._client.on_disconnect = self._on_disconnect
-        self._client.on_message = self._on_message
-        self._client.reconnect_delay_set(1, 60)
-
-    # --- paho callbacks (paho's network thread) ---
-    def _on_connect(self, client, userdata, flags, rc, props=None):
-        if getattr(rc, "is_failure", rc != 0):
-            _LOGGER.warning("Govee MQTT connect refused: %s", rc)
-            return
-        if self._account_topic:
-            client.subscribe(self._account_topic, qos=0)
-        self._loop.call_soon_threadsafe(self._connected.set)
-
-    def _on_disconnect(self, client, userdata, *args):
-        self._loop.call_soon_threadsafe(self._connected.clear)
-
-    def _on_message(self, client, userdata, msg):
-        try:
-            payload = json.loads(msg.payload)
+            payload = json.loads(raw)
         except ValueError:
             return
-        tx = payload.get("transaction")
-        if tx:
-            self._loop.call_soon_threadsafe(self._resolve, tx, payload)
+        if isinstance(payload, dict) and (tx := payload.get("transaction")):
+            self._resolve(tx, payload)
 
     def _resolve(self, tx: str, payload: dict) -> None:
         fut = self._pending.pop(tx, None)
@@ -112,44 +102,20 @@ class GoveeIot:
         elif payload.get("cmd"):
             _LOGGER.debug("Unmatched %s reply: %s", payload.get("cmd"), payload.get("op"))
 
-    # --- lifecycle ---
-    def _connect_blocking(self) -> None:
-        ctx = ssl.create_default_context()
-        ctx.load_cert_chain(self._cert, self._key)
-        self._client.tls_set_context(ctx)
-        self._client.connect_async(self._endpoint, 8883, keepalive=60)
-        self._client.loop_start()
-
-    async def async_start(self, timeout: float = 20) -> None:
-        await self._loop.run_in_executor(None, self._connect_blocking)
-        try:
-            await asyncio.wait_for(self._connected.wait(), timeout)
-        except asyncio.TimeoutError as err:
-            await self.async_stop()
-            raise IotError("timed out connecting to Govee MQTT") from err
-
-    async def async_stop(self) -> None:
-        def stop():
-            self._client.disconnect()
-            self._client.loop_stop()
-        await self._loop.run_in_executor(None, stop)
-
     # --- commands ---
-    async def async_command(self, topic: str, cmd: str, data: dict, timeout: float = 30) -> dict | None:
+    async def async_command(self, topic: str, cmd: str, data: dict, timeout: float = 30,
+                            msg_type: int = 1) -> dict | None:
         """Publish a command to the light's topic; return its reply (None if it never answered)."""
-        if not self._connected.is_set():
-            try:
-                await asyncio.wait_for(self._connected.wait(), 15)
-            except asyncio.TimeoutError as err:
-                raise IotError("not connected to Govee MQTT") from err
+        await self._async_wait_connected()
         tx = f"v_{int(time.time() * 1000)}{uuid.uuid4().hex[:4]}"
         fut = self._loop.create_future()
         self._pending[tx] = fut
-        msg = {"msg": {"cmd": cmd, "data": data, "cmdVersion": 0, "transaction": tx, "type": 1}}
-        info = self._client.publish(topic, json.dumps(msg), qos=1)
-        if info.rc != mqtt.MQTT_ERR_SUCCESS:
+        msg = {"msg": {"cmd": cmd, "data": data, "cmdVersion": 0, "transaction": tx, "type": msg_type}}
+        try:
+            await self._async_publish(topic, json.dumps(msg))
+        except IotError:
             self._pending.pop(tx, None)
-            raise IotError(f"publish failed: {mqtt.error_string(info.rc)}")
+            raise
         try:
             return await asyncio.wait_for(fut, timeout)
         except asyncio.TimeoutError:
@@ -178,13 +144,21 @@ class GoveeIot:
         # 33 05 <result>: 00 = downloaded and shown, 01 = download failed
         return ack[:2] == b"\x33\x05" and ack[2] == 0
 
+    async def async_status_reply(self, topic: str, timeout: float = 10) -> dict | None:
+        """The light's raw status report (sku, device, versions, state, op), or None if no reply.
+
+        Sent as type 0: with type 1 the light answers with an all-zero placeholder state
+        (onOff 0, empty op) instead of its real state (seen on firmware 1.00.91).
+        """
+        return await self.async_command(topic, "status", {}, timeout, msg_type=0)
+
     async def async_status(self, topic: str, timeout: float = 10) -> dict | None:
         """Ask the light for its state: {"on": bool | None, "mode": bytes | None} (None if no reply).
 
         "mode" is the light's echo of its current mode packet, e.g. aa 05 0a fe 00 .. for one of our
         images, aa 05 82 .. while its own playlist rotates.
         """
-        reply = await self.async_command(topic, "status", {}, timeout)
+        reply = await self.async_status_reply(topic, timeout)
         if reply is None:
             return None
         on = (reply.get("state") or {}).get("onOff")
@@ -203,3 +177,73 @@ class GoveeIot:
         """Send raw 20-byte frames (checksum added), e.g. 33 01 01 = power on."""
         b64 = lambda b: base64.b64encode(frame20(b)).decode()  # noqa: E731
         await self.async_command(topic, "ptReal", {"command": [b64(f) for f in frames]}, timeout=0.1)
+
+
+class GoveeIot(CommandLink):
+    """Commands via Govee's AWS IoT broker, authenticated with the account's IoT certificate."""
+
+    def __init__(self, loop: asyncio.AbstractEventLoop, endpoint: str, cert: str, key: str,
+                 account_id: str, account_topic: str) -> None:
+        super().__init__(loop)
+        self._endpoint = endpoint
+        self._cert, self._key = cert, key
+        self._account_topic = account_topic
+        self._connected = asyncio.Event()
+        client_id = f"AP/{account_id}/{uuid.uuid4().hex}"
+        try:
+            self._client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=client_id)
+        except AttributeError:  # paho-mqtt < 2
+            self._client = mqtt.Client(client_id=client_id)
+        self._client.on_connect = self._on_connect
+        self._client.on_disconnect = self._on_disconnect
+        self._client.on_message = self._on_message
+        self._client.reconnect_delay_set(1, 60)
+
+    # --- paho callbacks (paho's network thread) ---
+    def _on_connect(self, client, userdata, flags, rc, props=None):
+        if getattr(rc, "is_failure", rc != 0):
+            _LOGGER.warning("Govee MQTT connect refused: %s", rc)
+            return
+        if self._account_topic:
+            client.subscribe(self._account_topic, qos=0)
+        self._loop.call_soon_threadsafe(self._connected.set)
+
+    def _on_disconnect(self, client, userdata, *args):
+        self._loop.call_soon_threadsafe(self._connected.clear)
+
+    def _on_message(self, client, userdata, msg):
+        self._loop.call_soon_threadsafe(self._handle_reply, msg.payload)
+
+    # --- lifecycle ---
+    def _connect_blocking(self) -> None:
+        ctx = ssl.create_default_context()
+        ctx.load_cert_chain(self._cert, self._key)
+        self._client.tls_set_context(ctx)
+        self._client.connect_async(self._endpoint, 8883, keepalive=60)
+        self._client.loop_start()
+
+    async def async_start(self, timeout: float = 20) -> None:
+        await self._loop.run_in_executor(None, self._connect_blocking)
+        try:
+            await asyncio.wait_for(self._connected.wait(), timeout)
+        except asyncio.TimeoutError as err:
+            await self.async_stop()
+            raise IotError("timed out connecting to Govee MQTT") from err
+
+    async def async_stop(self) -> None:
+        def stop():
+            self._client.disconnect()
+            self._client.loop_stop()
+        await self._loop.run_in_executor(None, stop)
+
+    async def _async_wait_connected(self) -> None:
+        if not self._connected.is_set():
+            try:
+                await asyncio.wait_for(self._connected.wait(), 15)
+            except asyncio.TimeoutError as err:
+                raise IotError("not connected to Govee MQTT") from err
+
+    async def _async_publish(self, topic: str, payload: str) -> None:
+        info = self._client.publish(topic, payload, qos=1)
+        if info.rc != mqtt.MQTT_ERR_SUCCESS:
+            raise IotError(f"publish failed: {mqtt.error_string(info.rc)}")
