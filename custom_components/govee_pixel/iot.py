@@ -79,6 +79,7 @@ class CommandLink:
         self._loop = loop
         self._pending: dict[str, asyncio.Future] = {}
         self._report_listeners: list[Callable[[dict], None]] = []
+        self._tasks: set[asyncio.Task] = set()
         self._availability_listeners: list[Callable[[], None]] = []
 
     async def _async_wait_connected(self) -> None:
@@ -168,7 +169,19 @@ class CommandLink:
             _LOGGER.debug("Unexpected ptUrl reply: %s", reply)
             return None
         # 33 05 <result>: 00 = downloaded and shown, 01 = download failed
-        return ack[:2] == b"\x33\x05" and ack[2] == 0
+        ok = ack[:2] == b"\x33\x05" and ack[2] == 0
+        if ok:
+            # The light doesn't push its new mode after showing content; ask, so state listeners see it.
+            task = self._loop.create_task(self._async_status_quietly(topic))
+            self._tasks.add(task)
+            task.add_done_callback(self._tasks.discard)
+        return ok
+
+    async def _async_status_quietly(self, topic: str) -> None:
+        try:
+            await self.async_status_reply(topic)
+        except IotError as err:
+            _LOGGER.debug("Status refresh after ptUrl failed: %s", err)
 
     async def async_status_reply(self, topic: str, timeout: float = 10) -> dict | None:
         """The light's raw status report (sku, device, versions, state, op), or None if no reply.
