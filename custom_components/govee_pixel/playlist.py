@@ -359,6 +359,9 @@ class PlaylistController:
         self.interrupt_until = None
         if not self.active:
             return
+        if self.status in (STATUS_INTERRUPTED, STATUS_PAUSED):
+            # Leave the interrupted/paused state first: async_push holds back while it is set.
+            self.status = STATUS_HA if self.playback == PLAYBACK_HA else STATUS_LIGHT
         if self.playback == PLAYBACK_HA:
             await self.async_push(force=True)
             return
