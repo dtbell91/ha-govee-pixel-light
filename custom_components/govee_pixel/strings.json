@@ -112,6 +112,24 @@
           "image": "Image from Home Assistant",
           "govee_scene": "Govee scene"
         }
+      },
+      "rssi": {
+        "name": "WiFi signal"
+      },
+      "last_boot": {
+        "name": "Last boot"
+      },
+      "memory_available": {
+        "name": "Memory available"
+      },
+      "storage_free": {
+        "name": "Storage free"
+      },
+      "firmware": {
+        "name": "Custom firmware"
+      },
+      "ip_address": {
+        "name": "IP address"
       }
     },
     "notify": {
@@ -125,6 +143,57 @@
           "effect": {
             "state": {
               "Playlist": "Playlist"
+            }
+          }
+        }
+      }
+    },
+    "binary_sensor": {
+      "headphones": {
+        "name": "Headphones"
+      }
+    },
+    "event": {
+      "button_power": {
+        "name": "Power button",
+        "state_attributes": {
+          "event_type": {
+            "state": {
+              "press": "Press",
+              "long_press": "Long press"
+            }
+          }
+        }
+      },
+      "button_mode": {
+        "name": "Mode button",
+        "state_attributes": {
+          "event_type": {
+            "state": {
+              "press": "Press",
+              "long_press": "Long press"
+            }
+          }
+        }
+      },
+      "button_volume": {
+        "name": "Volume button",
+        "state_attributes": {
+          "event_type": {
+            "state": {
+              "press": "Press",
+              "long_press": "Long press"
+            }
+          }
+        }
+      },
+      "button_customize": {
+        "name": "Customize button",
+        "state_attributes": {
+          "event_type": {
+            "state": {
+              "press": "Press",
+              "long_press": "Long press"
             }
           }
         }

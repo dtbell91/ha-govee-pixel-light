@@ -14,7 +14,7 @@ from pathlib import Path
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_EMAIL, CONF_PASSWORD, Platform
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers import config_validation as cv, device_registry as dr
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
@@ -35,7 +35,8 @@ from .services import async_setup_services
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS = [Platform.IMAGE, Platform.LIGHT, Platform.NOTIFY, Platform.SENSOR, Platform.SWITCH]
+PLATFORMS = [Platform.BINARY_SENSOR, Platform.EVENT, Platform.IMAGE, Platform.LIGHT, Platform.NOTIFY, Platform.SENSOR,
+             Platform.SWITCH]
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 
@@ -124,6 +125,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: GoveePixelConfigEntry) -
     for dev in devices:
         state = data.states[dev.device] = DeviceState(dev.device)
         entry.async_on_unload(iot.async_add_report_listener(state.async_handle_report))
+    if (telemetry := getattr(iot, "telemetry", None)) is not None:
+        entry.async_on_unload(telemetry.async_add_listener(
+            lambda: _async_update_sw_version(hass, devices, telemetry)))
     store: Store[dict] = Store(hass, 1, f"{DOMAIN}.{entry.entry_id}.playlists")
     saved = (await store.async_load() or {}).get("devices", {})
 
@@ -141,6 +145,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: GoveePixelConfigEntry) -
         hass.async_create_background_task(_async_seed_state(iot, dev), f"govee_pixel state {dev.name}")
     _LOGGER.debug("Effects will be served from %s", effect_base_url(hass, entry))
     return True
+
+
+@callback
+def _async_update_sw_version(hass: HomeAssistant, devices: list[PixelDevice], telemetry) -> None:
+    """Show the custom firmware on the device page: "<Govee base> (custom <version>)"."""
+    data = telemetry.data or {}
+    if not data.get("firmware"):
+        return
+    sw_version = f"{data.get('base') or '?'} (custom {data['firmware']})"
+    dev_reg = dr.async_get(hass)
+    for dev in devices:
+        device = dev_reg.async_get_device(identifiers={(DOMAIN, dev.device)})
+        if device and device.sw_version != sw_version:
+            dev_reg.async_update_device(device.id, sw_version=sw_version)
 
 
 async def _async_seed_state(iot: CommandLink, dev: PixelDevice) -> None:

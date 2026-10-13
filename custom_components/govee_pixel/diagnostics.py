@@ -48,6 +48,7 @@ async def async_get_config_entry_diagnostics(hass: HomeAssistant, entry: GoveePi
             "available": link.available,
             "bridge_up": getattr(link, "bridge_up", None),
             "light_connected": getattr(link, "light_connected", None),
+            "telemetry": telemetry.as_dict() if (telemetry := getattr(link, "telemetry", None)) else None,
         },
         "devices": async_redact_data(devices, TO_REDACT),
     }

@@ -8,6 +8,7 @@ light itself, which bridges it to Home Assistant's broker under a topic prefix (
     <prefix>state         the light's replies and reports
     <prefix>lwt           the light's MQTT last will (connected / disconnected)
     <prefix>bridge/state  1 / 0, retained: the light's bridge to this broker is up
+    <prefix>telemetry, <prefix>button, <prefix>jack   from the firmware's telemetry layer (see telemetry.py)
 """
 from __future__ import annotations
 
@@ -20,6 +21,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 
 from .iot import CommandLink, IotError
+from .telemetry import DeviceTelemetry
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -42,6 +44,7 @@ class LocalMqttLink(CommandLink):
         self.light_connected: bool | None = None  # from the light's MQTT connect message / last will
         self._broker_connected = False
         self._bridge_seen = asyncio.Event()
+        self.telemetry = DeviceTelemetry()
 
     async def async_start(self, timeout: float = 10) -> None:
         if not await mqtt.async_wait_for_mqtt_client(self._hass):
@@ -52,6 +55,12 @@ class LocalMqttLink(CommandLink):
             await mqtt.async_subscribe(self._hass, f"{self.prefix}state", self._on_state, qos=0),
             await mqtt.async_subscribe(self._hass, f"{self.prefix}lwt", self._on_lwt, qos=0),
             await mqtt.async_subscribe(self._hass, f"{self.prefix}bridge/state", self._on_bridge, qos=0),
+            await mqtt.async_subscribe(self._hass, f"{self.prefix}telemetry",
+                                       self._telemetry_handler(self.telemetry.async_handle_telemetry), qos=0),
+            await mqtt.async_subscribe(self._hass, f"{self.prefix}jack",
+                                       self._telemetry_handler(self.telemetry.async_handle_jack), qos=0),
+            await mqtt.async_subscribe(self._hass, f"{self.prefix}button",
+                                       self._telemetry_handler(self.telemetry.async_handle_button), qos=1),
         ]
         # HA sends subscriptions in debounced batches once connected; the retained bridge state
         # arriving shows the batch (including <prefix>state) is live, so replies won't be missed.
@@ -64,6 +73,13 @@ class LocalMqttLink(CommandLink):
         for unsubscribe in self._unsubscribe:
             unsubscribe()
         self._unsubscribe = []
+
+    @staticmethod
+    def _telemetry_handler(handler):
+        @callback
+        def on_message(msg: mqtt.ReceiveMessage) -> None:
+            handler(msg.payload)
+        return on_message
 
     @callback
     def _on_state(self, msg: mqtt.ReceiveMessage) -> None:

@@ -54,3 +54,25 @@ class LightStateEntity(Entity):
     async def async_added_to_hass(self) -> None:
         self.async_on_remove(self.state_.async_add_listener(self.async_write_ha_state))
         self.async_on_remove(self.iot.async_add_availability_listener(self.async_write_ha_state))
+
+
+class TelemetryEntity(Entity):
+    """Base for entities fed by the custom firmware's telemetry layer (local-MQTT entries only)."""
+
+    _attr_has_entity_name = True
+    _attr_should_poll = False
+
+    def __init__(self, entry: GoveePixelConfigEntry, dev_id: str, key: str) -> None:
+        self.entry = entry
+        self.telemetry = entry.runtime_data.iot.telemetry
+        self._attr_translation_key = key
+        self._attr_unique_id = f"{dev_id}_{key}"
+        self._attr_device_info = DeviceInfo(identifiers={(DOMAIN, dev_id)})
+
+    @property
+    def available(self) -> bool:
+        return self.entry.runtime_data.iot.available
+
+    async def async_added_to_hass(self) -> None:
+        self.async_on_remove(self.telemetry.async_add_listener(self.async_write_ha_state))
+        self.async_on_remove(self.entry.runtime_data.iot.async_add_availability_listener(self.async_write_ha_state))

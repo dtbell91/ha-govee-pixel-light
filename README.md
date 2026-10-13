@@ -52,6 +52,9 @@ The light is expected on these topics (under the prefix):
 | `state` | The light's replies and status reports |
 | `lwt` | The light's MQTT last will |
 | `bridge/state` | `1` / `0`, retained: whether the light's bridge to this broker is connected |
+| `telemetry` | Optional, retained: device health, e.g. `{"rssi": -65, "uptime": 3600, "mem_available_kb": 71000, "udisk_free_kb": 236000, "ip": "192.168.1.20", "firmware": "3.2.0", "base": "1.00.91", "profile": "local", "slot": "B"}` |
+| `button` | Optional: `{"button": "power" \| "mode" \| "volume" \| "customize", "action": "press" \| "long_press"}` |
+| `jack` | Optional, retained: `{"headphones": false, "microphone": false}` |
 
 Setup asks the light for its status and uses its reply to identify it. A light set up through a
 Govee account entry has to be removed from that entry first. Playlists belong to the entry, so
@@ -77,6 +80,9 @@ recreate them on the local entry.
 | Display | What the light shows: `off`, `playlist`, `image` (something from Home Assistant) or `govee_scene` |
 | Playlist / Playlist status | Playlist switch and status (see [Playlist](#playlist)) |
 | Last image | Preview of the last picture or animation sent |
+| Power / Mode / Volume / Customize button | Event entities (`press`, `long_press`) for the light's physical buttons, for automations. The light still acts on each press itself. Local MQTT with `button` messages only |
+| Headphones | Whether headphones are plugged in. Local MQTT with `jack` messages only |
+| WiFi signal, Last boot, Memory available, Custom firmware (diagnostic) | From `telemetry` messages (Storage free and IP address are there too, disabled by default). The firmware version also shows on the device page. Local MQTT only |
 
 The light, message and display entities become unavailable when the light can't be reached
 (local MQTT: Home Assistant's broker connection, the light's `bridge/state` and its last will;
