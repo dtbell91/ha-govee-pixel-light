@@ -68,6 +68,20 @@ recreate them on the local entry.
 | Refresh live items every | How often weather / URL / camera items are redrawn (default 15 min). Only items whose picture changed are downloaded again |
 | Image encoding | **PNG frames** (default, verified) or **Automatic** (experimental): also uses the light's native GIF format when that is lossless and smaller, and sends 32×32 GIFs unchanged |
 
+## Entities
+
+| Entity | |
+|---|---|
+| Light | On/off and brightness. Effects: **Playlist** (start or resume the playlist) or one of the built-in animations (pauses the playlist until you pick Playlist again). Updated instantly: the light reports every change itself, including ones made with its buttons or other apps |
+| Message (notify) | `notify.send_message` shows the text (with the title in front, if given), then the playlist resumes after 60 s |
+| Display | What the light shows: `off`, `playlist`, `image` (something from Home Assistant) or `govee_scene` |
+| Playlist / Playlist status | Playlist switch and status (see [Playlist](#playlist)) |
+| Last image | Preview of the last picture or animation sent |
+
+The light, message and display entities become unavailable when the light can't be reached
+(local MQTT: Home Assistant's broker connection, the light's `bridge/state` and its last will;
+Govee account: the cloud connection).
+
 ## Action: `govee_pixel.show_image`
 
 | Field | |
