@@ -21,8 +21,10 @@ SHOWING_PLAYLIST = "playlist"
 SHOWING_IMAGE = "image"
 SHOWING_SCENE = "govee_scene"
 SHOWING_IDLE = "idle"  # pixeld with nothing to show
-SHOWING_OPTIONS = [SHOWING_OFF, SHOWING_PLAYLIST, SHOWING_IMAGE, SHOWING_SCENE, SHOWING_IDLE]
-_PIXELD_SHOWING = {"off": SHOWING_OFF, "playlist": SHOWING_PLAYLIST, "image": SHOWING_IMAGE, "idle": SHOWING_IDLE}
+SHOWING_STREAM = "stream"  # pixeld showing live frames (DDP)
+SHOWING_OPTIONS = [SHOWING_OFF, SHOWING_PLAYLIST, SHOWING_IMAGE, SHOWING_SCENE, SHOWING_IDLE, SHOWING_STREAM]
+_PIXELD_SHOWING = {"off": SHOWING_OFF, "playlist": SHOWING_PLAYLIST, "image": SHOWING_IMAGE, "idle": SHOWING_IDLE,
+                   "stream": SHOWING_STREAM}
 
 
 def mode_from_op(op: Any) -> bytes | None:

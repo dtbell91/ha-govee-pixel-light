@@ -131,7 +131,8 @@
           "playlist": "Playlist",
           "image": "Image from Home Assistant",
           "govee_scene": "Govee scene",
-          "idle": "Nothing to show"
+          "idle": "Nothing to show",
+          "stream": "Live stream (DDP)"
         }
       },
       "rssi": {

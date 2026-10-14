@@ -73,6 +73,9 @@ Compared with Govee's protocol:
   refreshing a weather item doesn't restart the rotation or show a loading animation.
 - An interruption (notification, `show_*` action) is shown over the playlist and ended with a resume.
 - "Effect base URL", playback mode, resume method, re-apply and image encoding options don't apply.
+- **Live streaming:** pixeld also accepts DDP on UDP port 4048 (32×32 RGB, row-major from the top-left, 1024
+  pixels), as sent by LedFx, xLights, Hyperion and other WLED-style tools. Streamed frames take over the panel
+  while they arrive; the playlist returns 2 s after they stop. Display shows `stream` meanwhile.
 
 | Topic (under the prefix) | |
 |---|---|
@@ -102,7 +105,7 @@ Compared with Govee's protocol:
 |---|---|
 | Light | On/off and brightness. Effects: **Playlist** (start or resume the playlist) or one of the built-in animations (pauses the playlist until you pick Playlist again). Updated instantly: the light reports every change itself, including ones made with its buttons or other apps |
 | Message (notify) | `notify.send_message` shows the text (with the title in front, if given), then the playlist resumes after 60 s |
-| Display | What the light shows: `off`, `playlist`, `image` (something from Home Assistant), `govee_scene` or (pixeld) `idle` |
+| Display | What the light shows: `off`, `playlist`, `image` (something from Home Assistant), `govee_scene`, or (pixeld) `idle` / `stream` (live DDP frames) |
 | Playlist / Playlist status | Playlist switch and status (see [Playlist](#playlist)) |
 | Last image | Preview of the last picture or animation sent |
 | Power / Mode / Volume / Customize button | Event entities (`press`, `long_press`) for the light's physical buttons, for automations. The light still acts on each press itself. Local MQTT with `button` messages only |
