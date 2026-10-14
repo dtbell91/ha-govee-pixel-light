@@ -24,13 +24,14 @@ from homeassistant.helpers.typing import ConfigType
 from .api import GoveeApi, GoveeAuthError, GoveeError, GoveeNeedsCode, PixelDevice, Session
 from .const import (
     CONF_ACCOUNT_ID, CONF_ACCOUNT_TOPIC, CONF_CLIENT_ID, CONF_CONNECTION, CONF_DEVICE_ID, CONF_HW_VERSION,
-    CONF_SKU, CONF_SW_VERSION, CONF_TOKEN, CONF_TOPIC_PREFIX, CONNECTION_LOCAL, DOMAIN, LOCAL_PANEL_SIDE,
+    CONF_SKU, CONF_SW_VERSION, CONF_TOKEN, CONF_TOPIC_PREFIX, CONNECTION_LOCAL, CONNECTION_PIXELD, DOMAIN,
+    LOCAL_PANEL_SIDE,
 )
 from .device_state import DeviceState
 from .display import effect_base_url
 from .effect_server import async_get_store
 from .iot import CommandLink, GoveeIot, IotError, write_cert_files
-from .playlist import PlaylistController
+from .playlist import PixeldPlaylistController, PlaylistController
 from .services import async_setup_services
 
 _LOGGER = logging.getLogger(__name__)
@@ -107,8 +108,29 @@ async def _async_setup_local(
     return None, link, [device]
 
 
+async def _async_setup_pixeld(
+    hass: HomeAssistant, entry: GoveePixelConfigEntry,
+) -> tuple[None, CommandLink, list[PixelDevice]]:
+    from .pixeld import PixeldLink  # late import: only these entries need the mqtt component
+
+    link = PixeldLink(hass, entry.data[CONF_TOPIC_PREFIX])
+    try:
+        await link.async_start()
+    except IotError as err:
+        raise ConfigEntryNotReady(str(err)) from err
+    size = int((link.info or {}).get("size") or LOCAL_PANEL_SIDE)
+    device = PixelDevice(
+        device=entry.data[CONF_DEVICE_ID], sku=entry.data.get(CONF_SKU) or "H8630", name=entry.title,
+        topic=link.cmd_topic, width=size, height=size,
+        sw_version=entry.data.get(CONF_SW_VERSION, ""), hw_version=entry.data.get(CONF_HW_VERSION, ""))
+    return None, link, [device]
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: GoveePixelConfigEntry) -> bool:
-    if entry.data.get(CONF_CONNECTION) == CONNECTION_LOCAL:
+    connection = entry.data.get(CONF_CONNECTION)
+    if connection == CONNECTION_PIXELD:
+        api, iot, devices = await _async_setup_pixeld(hass, entry)
+    elif connection == CONNECTION_LOCAL:
         api, iot, devices = await _async_setup_local(hass, entry)
     else:
         api, iot, devices = await _async_setup_cloud(hass, entry)
@@ -125,6 +147,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: GoveePixelConfigEntry) -
     for dev in devices:
         state = data.states[dev.device] = DeviceState(dev.device)
         entry.async_on_unload(iot.async_add_report_listener(state.async_handle_report))
+        if connection == CONNECTION_PIXELD:
+            entry.async_on_unload(iot.async_add_state_listener(state.async_handle_pixeld))
+            if iot.state is not None:
+                state.async_handle_pixeld(iot.state)
     if (telemetry := getattr(iot, "telemetry", None)) is not None:
         entry.async_on_unload(telemetry.async_add_listener(
             lambda: _async_update_sw_version(hass, devices, telemetry)))
@@ -135,7 +161,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: GoveePixelConfigEntry) -
         store.async_delay_save(lambda: {"devices": {k: c.as_dict() for k, c in data.playlists.items()}}, 1)
 
     for dev in devices:
-        data.playlists[dev.device] = PlaylistController(hass, entry, dev, saved.get(dev.device), save)
+        controller_cls = PixeldPlaylistController if connection == CONNECTION_PIXELD else PlaylistController
+        data.playlists[dev.device] = controller_cls(hass, entry, dev, saved.get(dev.device), save)
     entry.async_on_unload(entry.add_update_listener(_async_reload))
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     for controller in data.playlists.values():

@@ -20,7 +20,9 @@ SHOWING_OFF = "off"
 SHOWING_PLAYLIST = "playlist"
 SHOWING_IMAGE = "image"
 SHOWING_SCENE = "govee_scene"
-SHOWING_OPTIONS = [SHOWING_OFF, SHOWING_PLAYLIST, SHOWING_IMAGE, SHOWING_SCENE]
+SHOWING_IDLE = "idle"  # pixeld with nothing to show
+SHOWING_OPTIONS = [SHOWING_OFF, SHOWING_PLAYLIST, SHOWING_IMAGE, SHOWING_SCENE, SHOWING_IDLE]
+_PIXELD_SHOWING = {"off": SHOWING_OFF, "playlist": SHOWING_PLAYLIST, "image": SHOWING_IMAGE, "idle": SHOWING_IDLE}
 
 
 def mode_from_op(op: Any) -> bytes | None:
@@ -43,6 +45,7 @@ class DeviceState:
         self.brightness: int | None = None  # percent, 1-100
         self.mode: bytes | None = None  # last mode echo (aa 05 ..)
         self.last_report: float | None = None
+        self.pixeld_showing: str | None = None  # set when the light runs pixeld (no mode echo)
         self._listeners: list[Callable[[], None]] = []
 
     @callback
@@ -54,6 +57,8 @@ class DeviceState:
     def showing(self) -> str | None:
         if self.on is False:
             return SHOWING_OFF
+        if self.pixeld_showing is not None:
+            return self.pixeld_showing
         if not self.mode or len(self.mode) < 5:
             return None
         if self.mode[2] == 0x82:
@@ -89,6 +94,22 @@ class DeviceState:
         if changed:
             _LOGGER.debug("%s: on=%s brightness=%s mode=%s", self.device, self.on, self.brightness,
                           self.mode.hex() if self.mode else None)
+            self._notify()
+
+    @callback
+    def async_handle_pixeld(self, state: dict) -> None:
+        """Apply pixeld's retained px/state: {"on", "brightness", "showing", ...}."""
+        on = state.get("on")
+        brightness = state.get("brightness")
+        showing = _PIXELD_SHOWING.get(state.get("showing"), SHOWING_IDLE)
+        changed = (on, brightness, showing) != (self.on, self.brightness, self.pixeld_showing)
+        if isinstance(on, bool):
+            self.on = on
+        if isinstance(brightness, int) and brightness > 0:
+            self.brightness = brightness
+        self.pixeld_showing = showing
+        self.last_report = time.time()
+        if changed:
             self._notify()
 
     @callback

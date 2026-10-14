@@ -22,6 +22,7 @@ CONF_HW_VERSION = "hw_version"
 
 CONNECTION_CLOUD = "cloud"
 CONNECTION_LOCAL = "local_mqtt"
+CONNECTION_PIXELD = "pixeld"  # custom firmware running pixeld (its own display daemon)
 LOCAL_PANEL_SIDE = 32  # H8630: 32x32
 
 PLAYBACK_LIGHT = "light"

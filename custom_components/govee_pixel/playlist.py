@@ -11,6 +11,8 @@ itself by pushing each item as a one-off image in turn.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
 import random
 import time
@@ -414,3 +416,134 @@ class PlaylistController:
             except (asyncio.CancelledError, Exception):  # noqa: BLE001
                 pass
             self._rotation = None
+
+
+class PixeldPlaylistController(PlaylistController):
+    """Playlist for a light running pixeld: the light rotates the items itself and keeps its place when the
+    list changes, so edits and live-item refreshes just publish the new item list (only new content is
+    transferred). Interruptions are shown over the playlist and ended with a resume."""
+
+    @property
+    def link(self):
+        return self.entry.runtime_data.iot
+
+    @property
+    def playback(self) -> str:
+        return PLAYBACK_LIGHT
+
+    async def async_start(self) -> None:
+        minutes = self.entry.options.get(CONF_REFRESH_MINUTES, DEFAULT_REFRESH_MINUTES)
+        self._refresh_cancel = async_track_time_interval(
+            self.hass, self._async_refresh_tick, timedelta(minutes=max(1, minutes)))
+        if (state := self.entry.runtime_data.states.get(self.dev.device)) is not None:
+            self._state_cancel = state.async_add_listener(self._on_light_state)
+        if self.active and self.items:
+            self.status = STATUS_LIGHT
+            # Render now so the light's requests for content can be answered after a restart.
+            self.hass.async_create_background_task(self._async_safe_push(force=True),
+                                                   f"govee_pixel playlist {self.dev.name}")
+
+    async def async_set_active(self, on: bool) -> None:
+        if on:
+            if not self.items:
+                raise ServiceValidationError("The playlist is empty; add items with govee_pixel.playlist_add")
+            self.active = True
+            self._cancel_resume()
+            self.interrupt_until = None
+            if self.status in (STATUS_INTERRUPTED, STATUS_PAUSED, STATUS_STOPPED, STATUS_ERROR):
+                self.status = STATUS_LIGHT
+            await self.async_push(force=True)
+            await self._async_send(resume=True)
+        else:
+            self.active = False
+            self._cancel_resume()
+            self.status, self.last_error, self.interrupt_until = STATUS_STOPPED, None, None
+            try:
+                await self.link.async_set_playlist([])
+            except IotError as err:
+                raise HomeAssistantError(f"{self.dev.name}: {err}") from err
+        self._changed(save=True)
+
+    async def _async_send(self, **fields: Any) -> None:
+        try:
+            await self.link.async_set(**fields)
+        except IotError as err:
+            raise HomeAssistantError(f"{self.dev.name}: {err}") from err
+
+    async def _async_render_content(self) -> list[tuple[dict, str, list[payload.Frame] | None]]:
+        """Render every item to image bytes for the light: (item, content key, frames)."""
+        from .display import async_render_frames
+        from .pixeld import encode_content
+
+        out = []
+        for item in self.items:
+            try:
+                prepared = await content.async_prepare(
+                    self.hass, item["type"], self._validated(item["type"], item["options"]))
+                frames = await async_render_frames(self.hass, self.dev, prepared)
+                data = await self.hass.async_add_executor_job(encode_content, frames, prepared.source)
+                out.append((item, self.link.add_content(data, playlist=True), frames))
+            except HomeAssistantError as err:
+                if (key := self.item_keys.get(item["name"])) is not None:
+                    _LOGGER.warning("%s: playlist item %r failed (%s); keeping its previous image",
+                                    self.dev.name, item["name"], err)
+                    out.append((item, key, None))
+                else:
+                    _LOGGER.warning("%s: playlist item %r skipped: %s", self.dev.name, item["name"], err)
+        return out
+
+    async def async_push(self, force: bool = False) -> None:
+        async with self._lock:
+            rendered = await self._async_render_content()
+            if not rendered:
+                self.status, self.last_error = STATUS_ERROR, "no playlist item could be rendered"
+                self._changed()
+                raise HomeAssistantError(f"{self.dev.name}: {self.last_error}")
+            self.item_keys = {item["name"]: key for item, key, _ in rendered}
+            self.link.set_playlist_content(set(self.item_keys.values()))
+            items = [{"name": item["name"], "key": key, "duration": item["duration"]} for item, key, _ in rendered]
+            playlist_key = hashlib.sha256(json.dumps(items, sort_keys=True).encode()).hexdigest()
+            changed = playlist_key != self.playlist_key
+            self.playlist_key = playlist_key
+            if first := next((frames for _, _, frames in rendered if frames), None):
+                await async_set_preview(self.hass, self.entry, self.dev, first)
+            if changed or force:
+                try:
+                    await self.link.async_set_playlist(items)
+                except IotError as err:
+                    self.status, self.last_error = STATUS_ERROR, str(err)
+                    self._changed()
+                    raise HomeAssistantError(f"{self.dev.name}: {err}") from err
+                self.last_push = time.time()
+            if self.status in (STATUS_STOPPED, STATUS_ERROR, STATUS_HA):
+                self.status = STATUS_LIGHT
+            self.last_error = None
+            self._changed(save=True)
+
+    @callback
+    def _on_light_state(self) -> None:
+        state = self.entry.runtime_data.states[self.dev.device]
+        self.light_on = state.on
+        self.light_mode = state.showing
+        self._changed()
+
+    async def _async_refresh_tick(self, _now=None) -> None:
+        if self.active and self.items:
+            await self._async_safe_push()  # re-renders live items; publishes only if something changed
+
+    async def _async_resume_cb(self, _now=None) -> None:
+        self._resume_cancel = None
+        try:
+            await self.async_resume()
+        except HomeAssistantError as err:
+            _LOGGER.warning("%s: could not resume the playlist: %s", self.dev.name, err)
+
+    async def async_resume(self) -> None:
+        self._cancel_resume()
+        self.interrupt_until = None
+        if not self.active:
+            return
+        self.status = STATUS_LIGHT
+        await self._async_send(resume=True)
+        self._changed()
+        await self._async_safe_push()  # content may have been refreshed meanwhile

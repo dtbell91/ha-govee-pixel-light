@@ -52,6 +52,14 @@ async def async_render(hass: HomeAssistant, entry: GoveePixelConfigEntry, dev: P
         raise ServiceValidationError(f"Cannot render {prepared.label}: {err}") from err
 
 
+async def async_render_frames(hass: HomeAssistant, dev: PixelDevice, prepared: Prepared) -> list[payload.Frame]:
+    """Run the renderer only (lights running pixeld take the frames as an image file)."""
+    try:
+        return await hass.async_add_executor_job(prepared.render, dev.width)
+    except (OSError, ValueError) as err:
+        raise ServiceValidationError(f"Cannot render {prepared.label}: {err}") from err
+
+
 async def async_set_preview(hass: HomeAssistant, entry: GoveePixelConfigEntry, dev: PixelDevice,
                             frames: list[payload.Frame]) -> None:
     preview = await hass.async_add_executor_job(payload.preview_gif, frames)
@@ -80,6 +88,18 @@ async def async_push_effect(hass: HomeAssistant, entry: GoveePixelConfigEntry, d
 async def async_show(hass: HomeAssistant, entry: GoveePixelConfigEntry, dev: PixelDevice,
                      prepared: Prepared) -> dict:
     """Render, push and preview one piece of content. Returns the per-device result."""
+    from .pixeld import PixeldLink, encode_content
+
+    if isinstance(link := entry.runtime_data.iot, PixeldLink):
+        # Shown until the playlist resumes (the playlist controller sends the resume when a hold ends).
+        frames = await async_render_frames(hass, dev, prepared)
+        data = await hass.async_add_executor_job(encode_content, frames, prepared.source)
+        try:
+            await link.async_show(data, prepared.label)
+        except IotError as err:
+            raise HomeAssistantError(f"{dev.name}: {err}") from err
+        await async_set_preview(hass, entry, dev, frames)
+        return {"confirmed": True, "frames": len(frames), "bytes": len(data)}
     effect, frames = await async_render(hass, entry, dev, prepared)
     ok = await async_push_effect(hass, entry, dev, effect)
     await async_set_preview(hass, entry, dev, frames)

@@ -6,7 +6,8 @@
         "description": "How should Home Assistant send commands to the light?",
         "menu_options": {
           "cloud": "Govee account (commands via Govee's cloud)",
-          "local": "Local MQTT (light runs the local-MQTT custom firmware; no cloud)"
+          "local": "Local MQTT (light runs the local-MQTT custom firmware; no cloud)",
+          "pixeld": "Custom firmware with pixeld (local MQTT, light draws and rotates itself)"
         }
       },
       "cloud": {
@@ -41,6 +42,22 @@
         "data": {
           "password": "Password"
         }
+      },
+      "pixeld": {
+        "title": "Light running pixeld",
+        "description": "For a light on the custom firmware in native mode (pixeld). Home Assistant's MQTT integration must be set up.",
+        "data": {
+          "topic_prefix": "Topic prefix",
+          "name": "Name"
+        }
+      },
+      "reconfigure": {
+        "title": "Light protocol",
+        "description": "Switch between the custom firmware's two modes. The device, its entities and their history are kept.",
+        "data": {
+          "connection": "Protocol",
+          "topic_prefix": "Topic prefix"
+        }
       }
     },
     "error": {
@@ -49,13 +66,16 @@
       "cannot_connect": "Could not reach Govee's servers.",
       "no_devices": "No Govee pixel light (H8630) found on this account.",
       "mqtt_unavailable": "Home Assistant's MQTT integration is not set up or not connected, or the light's bridge reports it is down.",
-      "no_reply": "The light did not answer on that topic prefix. Check the prefix and that the light's bridge is connected (<prefix>bridge/state = 1)."
+      "no_reply": "The light did not answer on that topic prefix. Check the prefix and that the light's bridge is connected (<prefix>bridge/state = 1).",
+      "no_pixeld": "No pixeld light answered under that topic prefix (nothing on <prefix>px/info). Is native mode on?"
     },
     "abort": {
       "already_configured": "This Govee account or light is already configured.",
       "reauth_successful": "Logged in again.",
       "unique_id_mismatch": "That is a different Govee account.",
-      "device_in_cloud_entry": "This light is already set up through a Govee account entry. Remove that entry first to control it over local MQTT."
+      "device_in_cloud_entry": "This light is already set up through a Govee account entry. Remove that entry first to control it over local MQTT.",
+      "reconfigure_successful": "Reconfigured",
+      "not_local": "Only local (MQTT) lights can switch protocol."
     }
   },
   "options": {
@@ -110,7 +130,8 @@
           "off": "Off",
           "playlist": "Playlist",
           "image": "Image from Home Assistant",
-          "govee_scene": "Govee scene"
+          "govee_scene": "Govee scene",
+          "idle": "Nothing to show"
         }
       },
       "rssi": {
@@ -262,6 +283,12 @@
         "weather": "Weather",
         "text": "Text",
         "animation": "Animation"
+      }
+    },
+    "connection": {
+      "options": {
+        "local_mqtt": "Govee's protocol (govee_iot, bridged)",
+        "pixeld": "pixeld (native mode)"
       }
     }
   },

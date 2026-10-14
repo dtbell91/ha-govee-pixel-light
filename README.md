@@ -60,6 +60,31 @@ Setup asks the light for its status and uses its reply to identify it. A light s
 Govee account entry has to be removed from that entry first. Playlists belong to the entry, so
 recreate them on the local entry.
 
+### pixeld (custom firmware, native mode)
+
+On the custom firmware's native mode, Govee's software is replaced by **pixeld**, which draws the panel
+itself. Choose **pixeld** when adding the integration (same topic prefix, default `govee/h8630/`), or switch an
+existing local entry with **Reconfigure** (the device, entities and history are kept).
+
+Compared with Govee's protocol:
+- Images and animations travel over MQTT as PNG/GIF bytes, addressed by SHA-256. The light caches them and
+  asks (`px/need`) only for what it doesn't have, so the light never needs to reach Home Assistant over HTTP.
+- The light rotates the playlist itself and **keeps its place when the playlist changes**: editing items or
+  refreshing a weather item doesn't restart the rotation or show a loading animation.
+- An interruption (notification, `show_*` action) is shown over the playlist and ended with a resume.
+- "Effect base URL", playback mode, resume method, re-apply and image encoding options don't apply.
+
+| Topic (under the prefix) | |
+|---|---|
+| `px/status` | `online` / `offline` (retained, last will) |
+| `px/info` | Light identity: MAC, SKU, panel size, firmware versions (retained) |
+| `px/state` | `on`, `brightness`, `showing` (`off` / `playlist` / `image` / `idle`), current item (retained) |
+| `px/set` | `{"on", "brightness", "resume", "next"}` |
+| `px/show` | `{"key", "hold", "name"}` |
+| `px/playlist` | `{"items": [{"name", "key", "duration"}]}` (retained) |
+| `px/need` / `px/content/<key>` | The light asks for missing content; Home Assistant sends the bytes |
+| `telemetry`, `button`, `jack` | As above |
+
 ### Options
 
 | Option | |
@@ -77,7 +102,7 @@ recreate them on the local entry.
 |---|---|
 | Light | On/off and brightness. Effects: **Playlist** (start or resume the playlist) or one of the built-in animations (pauses the playlist until you pick Playlist again). Updated instantly: the light reports every change itself, including ones made with its buttons or other apps |
 | Message (notify) | `notify.send_message` shows the text (with the title in front, if given), then the playlist resumes after 60 s |
-| Display | What the light shows: `off`, `playlist`, `image` (something from Home Assistant) or `govee_scene` |
+| Display | What the light shows: `off`, `playlist`, `image` (something from Home Assistant), `govee_scene` or (pixeld) `idle` |
 | Playlist / Playlist status | Playlist switch and status (see [Playlist](#playlist)) |
 | Last image | Preview of the last picture or animation sent |
 | Power / Mode / Volume / Customize button | Event entities (`press`, `long_press`) for the light's physical buttons, for automations. The light still acts on each press itself. Local MQTT with `button` messages only |
