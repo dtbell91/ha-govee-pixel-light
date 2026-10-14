@@ -103,6 +103,7 @@ CALENDAR_OPTIONS = {
     vol.Required(ATTR_CALENDAR_ENTITY): vol.All(cv.ensure_list, [cv.entity_domain("calendar")]),
     vol.Optional(ATTR_HOURS, default=24): vol.All(vol.Coerce(float), vol.Range(0.5, 24 * 14)),
     vol.Optional(ATTR_COLOR): RGB,
+    vol.Optional(ATTR_SIZE, default="auto"): vol.In(["auto", "large"]),
 }
 NOW_PLAYING_OPTIONS = {
     vol.Required(ATTR_MEDIA_PLAYER): cv.entity_domain("media_player"),
@@ -300,7 +301,8 @@ async def _prepare_calendar(hass: HomeAssistant, data: dict) -> Prepared:
     if later := len(events) - len(same_day):
         summary = f"{summary} +{later}"
     color = tuple(data[ATTR_COLOR]) if data.get(ATTR_COLOR) else (255, 200, 60)
-    return Prepared(_generated(lambda: animations.reminder(start.day, when, time_label, summary, color)), (0, 0, 0),
+    return Prepared(_generated(lambda: animations.reminder(start.day, when, time_label, summary, color,
+                                                                  data.get(ATTR_SIZE, "auto"))), (0, 0, 0),
                     f"calendar {events[0][2]}")
 
 

@@ -383,9 +383,62 @@ def now_playing(cover: Image.Image | None, caption: str, color=(255, 255, 255),
     return frames
 
 
-def reminder(day: int, when: str, time_label: str, summary: str, color=(255, 200, 60)) -> Frames:
+def _wrap(words: list[str], width: int) -> list[str]:
+    lines, cur = [], ""
+    for w in words:
+        cand = f"{cur} {w}".strip()
+        if text_w(cand) <= width or not cur:
+            cur = cand
+        else:
+            lines.append(cur)
+            cur = w
+    if cur:
+        lines.append(cur)
+    return lines
+
+
+def reminder(day: int, when: str, time_label: str, summary: str, color=(255, 200, 60), size: str = "auto") -> Frames:
     """Calendar-page icon with the day number, when (TDAY / TMRW / FRI) and time beside it; the event name
-    below, starting fully visible from the left, scrolling after a pause if it doesn't fit."""
+    below. size "auto": small text word-wrapped onto up to 3 lines, a line too wide for the panel sliding back
+    and forth in place; falls back to "large" (one line of big text, scrolling) if it needs more lines."""
+    summary = summary.strip().upper() or "EVENT"
+    lines = _wrap(summary.split(), W) if size != "large" else []
+    if not lines or len(lines) > 3:
+        return _reminder_large(day, when, time_label, summary, color)
+
+    def page(d):
+        rect(d, 1, 1, 11, 2, (220, 40, 40))  # page header
+        rect(d, 1, 3, 11, 10, (235, 235, 235))  # page
+        num = str(day)
+        text(d, num, 1 + (11 - text_w(num)) // 2, 5, (30, 30, 30))
+        text(d, when, 14, 1, tuple(color))
+        if time_label:
+            text(d, time_label, 14, 7, dim(tuple(color), 0.7))
+
+    y0 = 14 if len(lines) == 3 else 16 if len(lines) == 2 else 19
+    overflow = [max(0, text_w(ln) - W) for ln in lines]
+    travel = max(overflow)
+    if travel == 0:
+        im, d = canvas()
+        page(d)
+        for i, ln in enumerate(lines):
+            text(d, ln, (W - text_w(ln)) // 2, y0 + i * 6, (255, 255, 255))
+        return [im], 1000
+    # Wide line(s): hold at the start, slide to show the end, hold, slide back (loops seamlessly).
+    offsets = [0] * 10 + list(range(1, travel + 1)) + [travel] * 10 + list(range(travel - 1, 0, -1))
+    frames = []
+    for off in offsets:
+        im, d = canvas()
+        page(d)
+        for i, ln in enumerate(lines):
+            x = (W - text_w(ln)) // 2 if overflow[i] == 0 else -min(off, overflow[i])
+            text(d, ln, x, y0 + i * 6, (255, 255, 255))
+        frames.append(im)
+    return frames, 150
+
+
+def _reminder_large(day: int, when: str, time_label: str, summary: str, color) -> Frames:
+    """One line of big text under the page, scrolling if it doesn't fit."""
     def top(d):
         rect(d, 1, 1, 13, 3, (220, 40, 40))  # page header
         rect(d, 1, 4, 13, 14, (235, 235, 235))  # page
@@ -395,7 +448,6 @@ def reminder(day: int, when: str, time_label: str, summary: str, color=(255, 200
         if time_label:
             text(d, time_label, 16, 9, dim(tuple(color), 0.7))
 
-    summary = summary.strip().upper() or "EVENT"
     width = text_w(summary, 2)
     y = 19
     if width <= W - 2:
@@ -404,8 +456,9 @@ def reminder(day: int, when: str, time_label: str, summary: str, color=(255, 200
         text(d, summary, (W - width) // 2, y, (255, 255, 255), scale=2)
         return [im], 1000
     frames = []
-    step = 2
-    for i, x in enumerate([1] * 12 + list(range(1, -(width - W + 2) - 1, -step)) + [-(width - W + 1)] * 12):
+    travel = width - W + 2
+    step = max(2, math.ceil(travel / 70))  # stay under the 100-frame item limit
+    for x in [1] * 12 + list(range(1, -travel - 1, -step)) + [-(width - W + 1)] * 12:
         im, d = canvas()
         top(d)
         text(d, summary, x, y, (255, 255, 255), scale=2)

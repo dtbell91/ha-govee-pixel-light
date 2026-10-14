@@ -203,7 +203,7 @@ With the pixeld connection type the playlist works as a small dashboard. Extra i
 | `item_type` | Options | Shows |
 |---|---|---|
 | `clock` | `hour12` (false), `date` (`weekday_day` / `day_month` / `month_day` / `none`), `color`, `seconds` (bar along the bottom) | A clock drawn by the light itself in Home Assistant's time zone; keeps time without Home Assistant |
-| `calendar` | `calendar_entity` (one or a list), `hours` ahead (24), `color` | The next event: a calendar page with its day, TDAY / TMRW / weekday and time, the name below (`+2` if more follow). Left out when there are no events |
+| `calendar` | `calendar_entity` (one or a list), `hours` ahead (24), `color`, `size` (`auto` / `large`) | The next day's events: a calendar page with the day, TDAY / TMRW / weekday and time, the names below (`+2` if more follow on later days). `auto`: small text wrapped onto up to 3 lines, a line too wide for the panel sliding in place, big scrolling text if it needs more; `large`: always big scrolling text (readable from further away). Left out when there are no events |
 | `now_playing` | `media_player_entity`, `color` | Album art with title and artist scrolling along the bottom. Only while the player is playing |
 
 Any item can have `show_if`, a template: the item is in the rotation only while it renders true, e.g.
