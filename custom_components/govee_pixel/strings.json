@@ -282,7 +282,10 @@
         "image": "Image",
         "weather": "Weather",
         "text": "Text",
-        "animation": "Animation"
+        "animation": "Animation",
+        "clock": "Clock (pixeld)",
+        "calendar": "Calendar (upcoming events)",
+        "now_playing": "Now playing (media player)"
       }
     },
     "connection": {
@@ -452,6 +455,10 @@
         "position": {
           "name": "Position",
           "description": "0 = first. Default: end of the list (or the item's current place when updating)."
+        },
+        "show_if": {
+          "name": "Show if",
+          "description": "Template: the item is in the rotation only while this is true (pixeld). Re-checked when the entities it uses change."
         }
       }
     },

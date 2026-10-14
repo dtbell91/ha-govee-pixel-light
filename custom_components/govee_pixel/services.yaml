@@ -226,6 +226,9 @@ playlist_add:
             - weather
             - text
             - animation
+            - clock
+            - calendar
+            - now_playing
     options:
       example: '{"weather_entity": "weather.home"}'
       selector:
@@ -244,6 +247,10 @@ playlist_add:
           min: 0
           max: 19
           mode: box
+    show_if:
+      example: "{{ now().weekday() == 0 and now().hour >= 17 }}"
+      selector:
+        template:
 
 playlist_remove:
   fields:

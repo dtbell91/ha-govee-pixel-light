@@ -68,6 +68,7 @@ ATTR_NAME = "name"
 ATTR_ITEM_TYPE = "item_type"
 ATTR_OPTIONS = "options"
 ATTR_POSITION = "position"
+ATTR_SHOW_IF = "show_if"
 
 # How long a served effect stays downloadable (the light fetches it within seconds).
 EFFECT_TTL = 600

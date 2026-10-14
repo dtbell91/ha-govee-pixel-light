@@ -353,6 +353,76 @@ def scrolling_text(message: str, color=None, background=(0, 0, 0), large: bool =
     return frames, frame_ms * step
 
 
+def now_playing(cover: Image.Image | None, caption: str, color=(255, 255, 255),
+                size: int = W) -> list[tuple[Image.Image, int]]:
+    """Album art (or a note) with the caption scrolling in a dark band along the bottom."""
+    base = cover.convert("RGB") if cover is not None else _note()
+    band_y = size - 7
+    shaded = base.copy()
+    sd = ImageDraw.Draw(shaded)
+    for y in range(band_y, size):
+        for x in range(size):
+            r, g, b = shaded.getpixel((x, y))
+            sd.point((x, y), (r // 5, g // 5, b // 5))
+    caption = caption.strip()
+    if not caption:
+        return [(base, 1000)]
+    width = text_w(caption)
+    frames = [(base, 2500)]  # the art on its own first
+    if width <= size:
+        im = shaded.copy()
+        text(ImageDraw.Draw(im), caption, (size - width) // 2, band_y + 1, tuple(color))
+        frames.append((im, 4000))
+        return frames
+    travel = width + size
+    step = max(1, math.ceil(travel / 95))
+    for t in range(0, travel, step):
+        im = shaded.copy()
+        text(ImageDraw.Draw(im), caption, size - t, band_y + 1, tuple(color))
+        frames.append((im, 80 * step))
+    return frames
+
+
+def reminder(day: int, when: str, time_label: str, summary: str, color=(255, 200, 60)) -> Frames:
+    """Calendar-page icon with the day number, when (TDAY / TMRW / FRI) and time beside it; the event name
+    below, starting fully visible from the left, scrolling after a pause if it doesn't fit."""
+    def top(d):
+        rect(d, 1, 1, 13, 3, (220, 40, 40))  # page header
+        rect(d, 1, 4, 13, 14, (235, 235, 235))  # page
+        num = str(day)
+        text(d, num, 1 + (13 - text_w(num)) // 2, 7, (30, 30, 30))
+        text(d, when, 16, 3, tuple(color))
+        if time_label:
+            text(d, time_label, 16, 9, dim(tuple(color), 0.7))
+
+    summary = summary.strip().upper() or "EVENT"
+    width = text_w(summary, 2)
+    y = 19
+    if width <= W - 2:
+        im, d = canvas()
+        top(d)
+        text(d, summary, (W - width) // 2, y, (255, 255, 255), scale=2)
+        return [im], 1000
+    frames = []
+    step = 2
+    for i, x in enumerate([1] * 12 + list(range(1, -(width - W + 2) - 1, -step)) + [-(width - W + 1)] * 12):
+        im, d = canvas()
+        top(d)
+        text(d, summary, x, y, (255, 255, 255), scale=2)
+        frames.append(im)
+    return frames, 90
+
+
+def _note() -> Image.Image:
+    """Placeholder art: a music note on dark purple."""
+    im, d = canvas((25, 0, 40))
+    rect(d, 18, 6, 19, 19, (230, 180, 255))
+    rect(d, 18, 6, 24, 7, (230, 180, 255))
+    rect(d, 23, 8, 24, 9, (230, 180, 255))
+    disc(d, 15, 20, 3, (230, 180, 255))
+    return im
+
+
 # ---------- animated scenes ----------
 
 def scene_maths(t):

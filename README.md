@@ -182,7 +182,7 @@ itself. Items are any of the four content types above, with the same options as 
   Assistant), `interrupted`, `paused` or `error`; attributes list the items, when an interruption
   ends, the last error, and the light's last reported on/off state and mode. (The light does the rotating, so HA does not know which item is on screen.)
 - `govee_pixel.playlist_add`: add an item, or replace the item with the same name (`name`,
-  `item_type`: image/weather/text/animation, `options`, `duration`, optional `position`).
+  `item_type`, `options`, `duration`, optional `position`, optional `show_if`).
 - `govee_pixel.playlist_remove` (`name`), `govee_pixel.playlist_clear`,
   `govee_pixel.playlist_resume`, `govee_pixel.playlist_refresh` (redraw everything now).
 
@@ -192,6 +192,24 @@ they never wake it; they catch up at the next refresh after it is back on. The l
 by URL and every file's URL is derived from its content, so only new or changed pictures are
 downloaded. Playlist files are served by Home Assistant, so the light needs to be able to reach it
 whenever it (re)loads the playlist.
+
+### Dashboard items (pixeld)
+
+With the pixeld connection type the playlist works as a small dashboard. Extra item types:
+
+| `item_type` | Options | Shows |
+|---|---|---|
+| `clock` | `hour12` (false), `date` (`weekday_day` / `day_month` / `month_day` / `none`), `color`, `seconds` (bar along the bottom) | A clock drawn by the light itself in Home Assistant's time zone; keeps time without Home Assistant |
+| `calendar` | `calendar_entity` (one or a list), `hours` ahead (24), `color` | The next event: a calendar page with its day, TDAY / TMRW / weekday and time, the name below (`+2` if more follow). Left out when there are no events |
+| `now_playing` | `media_player_entity`, `color` | Album art with title and artist scrolling along the bottom. Only while the player is playing |
+
+Any item can have `show_if`, a template: the item is in the rotation only while it renders true, e.g.
+`{{ now().weekday() == 0 and now().hour >= 17 }}` for a Monday-evening bin reminder.
+
+Items are redrawn a few seconds after the entities they use change (weather, calendars, media players and
+anything a `show_if` template reads), as well as at every refresh. The light keeps its place in the
+rotation when items come and go. `clock`, `show_if` and the immediate redraws need pixeld; on Govee's
+protocol clock items are skipped.
 
 ## Generating GIF files
 

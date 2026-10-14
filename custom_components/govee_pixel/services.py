@@ -12,7 +12,8 @@ from homeassistant.helpers import config_validation as cv, device_registry as dr
 
 from . import content, looplay
 from .const import (
-    ATTR_DEVICE_ID, ATTR_DURATION, ATTR_ITEM_TYPE, ATTR_NAME, ATTR_OPTIONS, ATTR_POSITION, DEFAULT_INTERRUPT_SECONDS,
+    ATTR_DEVICE_ID, ATTR_DURATION, ATTR_ITEM_TYPE, ATTR_NAME, ATTR_OPTIONS, ATTR_POSITION, ATTR_SHOW_IF,
+    DEFAULT_INTERRUPT_SECONDS,
     DEFAULT_ITEM_SECONDS, DOMAIN, SERVICE_PLAYLIST_ADD, SERVICE_PLAYLIST_CLEAR, SERVICE_PLAYLIST_REFRESH,
     SERVICE_PLAYLIST_REMOVE, SERVICE_PLAYLIST_RESUME, SERVICE_SHOW_ANIMATION, SERVICE_SHOW_IMAGE, SERVICE_SHOW_TEXT,
     SERVICE_SHOW_WEATHER,
@@ -57,6 +58,7 @@ PLAYLIST_ADD_SCHEMA = vol.Schema({
     vol.Optional(ATTR_OPTIONS, default=dict): dict,
     vol.Optional(ATTR_DURATION, default=DEFAULT_ITEM_SECONDS): vol.All(vol.Coerce(int), vol.Range(1, 65535)),
     vol.Optional(ATTR_POSITION): vol.All(vol.Coerce(int), vol.Range(0, looplay.MAX_ITEMS - 1)),
+    vol.Optional(ATTR_SHOW_IF): cv.string,
 })
 PLAYLIST_REMOVE_SCHEMA = vol.Schema({**TARGET, vol.Required(ATTR_NAME): cv.string})
 TARGET_SCHEMA = vol.Schema(TARGET)
@@ -99,7 +101,7 @@ async def _async_show(call: ServiceCall, kind: str) -> ServiceResponse:
 async def _async_playlist_add(call: ServiceCall) -> None:
     for c in _controllers(call):
         await c.async_add(call.data[ATTR_NAME], call.data[ATTR_ITEM_TYPE], call.data[ATTR_OPTIONS],
-                          call.data[ATTR_DURATION], call.data.get(ATTR_POSITION))
+                          call.data[ATTR_DURATION], call.data.get(ATTR_POSITION), call.data.get(ATTR_SHOW_IF))
 
 
 async def _async_playlist_remove(call: ServiceCall) -> None:

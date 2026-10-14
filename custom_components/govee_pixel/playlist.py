@@ -24,8 +24,12 @@ import voluptuous as vol
 from PIL import Image
 
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
-from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
-from homeassistant.helpers.event import async_call_later, async_track_time_interval
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError, TemplateError
+from homeassistant.helpers.event import (
+    TrackTemplate, async_call_later, async_track_state_change_event, async_track_template_result,
+    async_track_time_interval,
+)
+from homeassistant.helpers.template import Template, result_as_boolean
 
 from . import content, looplay, payload
 from .const import (
@@ -48,6 +52,7 @@ STATUS_HA = "rotating_ha"
 STATUS_INTERRUPTED = "interrupted"
 STATUS_PAUSED = "paused"
 STATUS_ERROR = "error"
+REDRAW_DELAY = 3  # seconds: coalesce bursts of entity changes into one redraw
 
 
 class PlaylistController:
@@ -133,9 +138,11 @@ class PlaylistController:
             raise ServiceValidationError(f"Invalid {item_type} options: {err}") from err
 
     async def async_add(self, name: str, item_type: str, options: dict, duration: int,
-                        position: int | None = None) -> None:
+                        position: int | None = None, show_if: str | None = None) -> None:
         self._validated(item_type, options)
         item = {"name": name, "type": item_type, "options": dict(options), "duration": int(duration)}
+        if show_if:
+            item["show_if"] = show_if
         existing = next((i for i, it in enumerate(self.items) if it["name"] == name), None)
         if existing is not None:
             self.items.pop(existing)
@@ -201,6 +208,8 @@ class PlaylistController:
                     self.hass, item["type"], self._validated(item["type"], item["options"]))
                 effect, frames = await async_render(self.hass, self.entry, self.dev, prepared)
                 out.append((item, store.add(effect), frames))
+            except content.NothingToShow as err:
+                _LOGGER.debug("%s: playlist item %r left out: %s", self.dev.name, item["name"], err)
             except HomeAssistantError as err:
                 if (key := self.item_keys.get(item["name"])) is not None:
                     _LOGGER.warning("%s: playlist item %r failed (%s); keeping its previous image",
@@ -421,7 +430,16 @@ class PlaylistController:
 class PixeldPlaylistController(PlaylistController):
     """Playlist for a light running pixeld: the light rotates the items itself and keeps its place when the
     list changes, so edits and live-item refreshes just publish the new item list (only new content is
-    transferred). Interruptions are shown over the playlist and ended with a resume."""
+    transferred). Interruptions are shown over the playlist and ended with a resume.
+
+    Items can be conditional (show_if template, calendar without events, nothing playing) and are redrawn
+    shortly after the entities they use change, not only at the periodic refresh."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._track_signature: tuple | None = None
+        self._track_cancels: list[CALLBACK_TYPE] = []
+        self._redraw_cancel: CALLBACK_TYPE | None = None
 
     @property
     def link(self):
@@ -477,12 +495,19 @@ class PixeldPlaylistController(PlaylistController):
 
         out = []
         for item in self.items:
+            if not self._show_if(item):
+                continue
+            if item["type"] in content.CARD_KINDS:
+                out.append((item, None, None))  # drawn by the light; see _card()
+                continue
             try:
                 prepared = await content.async_prepare(
                     self.hass, item["type"], self._validated(item["type"], item["options"]))
                 frames = await async_render_frames(self.hass, self.dev, prepared)
                 data = await self.hass.async_add_executor_job(encode_content, frames, prepared.source)
                 out.append((item, self.link.add_content(data, playlist=True), frames))
+            except content.NothingToShow as err:
+                _LOGGER.debug("%s: playlist item %r left out: %s", self.dev.name, item["name"], err)
             except HomeAssistantError as err:
                 if (key := self.item_keys.get(item["name"])) is not None:
                     _LOGGER.warning("%s: playlist item %r failed (%s); keeping its previous image",
@@ -494,14 +519,17 @@ class PixeldPlaylistController(PlaylistController):
 
     async def async_push(self, force: bool = False) -> None:
         async with self._lock:
+            self._async_retrack()
             rendered = await self._async_render_content()
-            if not rendered:
+            if not rendered and not any(it.get("show_if") or it["type"] in content.CONDITIONAL_KINDS
+                                        for it in self.items):
                 self.status, self.last_error = STATUS_ERROR, "no playlist item could be rendered"
                 self._changed()
                 raise HomeAssistantError(f"{self.dev.name}: {self.last_error}")
-            self.item_keys = {item["name"]: key for item, key, _ in rendered}
+            self.item_keys = {item["name"]: key for item, key, _ in rendered if key}
             self.link.set_playlist_content(set(self.item_keys.values()))
-            items = [{"name": item["name"], "key": key, "duration": item["duration"]} for item, key, _ in rendered]
+            items = [{"name": item["name"], "duration": item["duration"],
+                      **({"card": self._card(item)} if key is None else {"key": key})} for item, key, _ in rendered]
             playlist_key = hashlib.sha256(json.dumps(items, sort_keys=True).encode()).hexdigest()
             changed = playlist_key != self.playlist_key
             self.playlist_key = playlist_key
@@ -519,6 +547,68 @@ class PixeldPlaylistController(PlaylistController):
                 self.status = STATUS_LIGHT
             self.last_error = None
             self._changed(save=True)
+
+    def _show_if(self, item: dict) -> bool:
+        if not (source := item.get("show_if")):
+            return True
+        try:
+            return result_as_boolean(Template(source, self.hass).async_render(parse_result=False))
+        except TemplateError as err:
+            _LOGGER.warning("%s: show_if of %r failed (%s); leaving the item out", self.dev.name, item["name"], err)
+            return False
+
+    @callback
+    def _async_retrack(self) -> None:
+        """Redraw soon after anything an item depends on changes: its source entities, its show_if result."""
+        entities: set[str] = set()
+        templates = []
+        for item in self.items:
+            try:
+                entities.update(content.source_entities(item["type"], self._validated(item["type"], item["options"])))
+            except HomeAssistantError:
+                pass
+            if item.get("show_if"):
+                templates.append(item["show_if"])
+        signature = (frozenset(entities), tuple(templates), self.active)
+        if signature == self._track_signature:
+            return
+        self._track_signature = signature
+        for cancel in self._track_cancels:
+            cancel()
+        self._track_cancels = []
+        if not self.active:
+            return
+        if entities:
+            self._track_cancels.append(async_track_state_change_event(self.hass, sorted(entities), self._on_source))
+        if templates:
+            info = async_track_template_result(
+                self.hass, [TrackTemplate(Template(t, self.hass), None) for t in templates], self._on_source)
+            self._track_cancels.append(info.async_remove)
+
+    @callback
+    def _on_source(self, *_args) -> None:
+        if self._redraw_cancel is None and self.active:
+            self._redraw_cancel = async_call_later(self.hass, REDRAW_DELAY, self._async_redraw)
+
+    async def _async_redraw(self, _now=None) -> None:
+        self._redraw_cancel = None
+        if self.active and self.interrupt_until is None and self.status != STATUS_PAUSED:
+            await self._async_safe_push()
+
+    async def async_stop(self) -> None:
+        for cancel in self._track_cancels:
+            cancel()
+        self._track_cancels = []
+        if self._redraw_cancel:
+            self._redraw_cancel()
+            self._redraw_cancel = None
+        await super().async_stop()
+
+    def _card(self, item: dict) -> dict:
+        options = self._validated(item["type"], item["options"])
+        if item["type"] == content.KIND_CLOCK:
+            return content.clock_card(self.hass, options)
+        raise HomeAssistantError(f"no card for {item['type']}")
 
     @callback
     def _on_light_state(self) -> None:
