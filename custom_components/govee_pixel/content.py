@@ -295,8 +295,10 @@ async def _prepare_calendar(hass: HomeAssistant, data: dict) -> Prepared:
     when = "TDAY" if day <= 0 else "TMRW" if day == 1 else start.strftime("%a").upper()  # 4 chars fit
     time_label = "" if all_day else (start.strftime("%I").lstrip("0") + ("" if start.minute == 0 else start.strftime(":%M"))
                                      + start.strftime("%p")[0])
-    if len(events) > 1:
-        summary = f"{summary} +{len(events) - 1}"
+    same_day = [e[2] for e in events if e[0].date() == start.date()]
+    summary = " & ".join(dict.fromkeys(same_day))  # e.g. bin collections: "Garbage & Recycling"
+    if later := len(events) - len(same_day):
+        summary = f"{summary} +{later}"
     color = tuple(data[ATTR_COLOR]) if data.get(ATTR_COLOR) else (255, 200, 60)
     return Prepared(_generated(lambda: animations.reminder(start.day, when, time_label, summary, color)), (0, 0, 0),
                     f"calendar {events[0][2]}")
