@@ -77,8 +77,8 @@ Compared with Govee's protocol:
   pixels), as sent by LedFx, xLights, Hyperion and other WLED-style tools. Streamed frames take over the panel
   while they arrive; the playlist returns 2 s after they stop. Display shows `stream` meanwhile.
 - **Updates:** the **pixeld** update entity offers new releases of [pixeld](https://github.com/dtbell91/pixeld).
-  Installing one downloads it to Home Assistant, checks its SHA-256 and sends it to the light over MQTT (the
-  light never goes online). The light runs the new build on trial and keeps it once it has been healthy for a
+  Installing one downloads it to Home Assistant, checks its SHA-256 and has the light fetch it from Home
+  Assistant (the light never goes online; it must be able to reach Home Assistant's URL, as for voice). The light runs the new build on trial and keeps it once it has been healthy for a
   minute; if it fails to start or doesn't confirm, the light goes back to the build it had and the update
   reports the rollback. Older releases can be installed too (`update.install` with `version`). Needs a firmware
   whose native layer supports app updates (the entity's `light_supports_updates` attribute).
@@ -92,7 +92,7 @@ Compared with Govee's protocol:
 | `px/show` | `{"key", "hold", "name"}` |
 | `px/playlist` | `{"items": [{"name", "key", "duration"}]}` (retained) |
 | `px/need` / `px/content/<key>` | The light asks for missing content; Home Assistant sends the bytes |
-| `px/update/<sha256>` | A gzipped pixeld build to install (not retained); `px/update/rollback` returns to the previous build |
+| `px/update/install` | `{"url", "sha256"}`: download and install a pixeld build (not retained); `px/update/rollback` returns to the previous build |
 | `px/update/state` | `{"state", "version", "detail"}`: `installing`, `restarting`, `trial`, `ok`, `rolled_back`, `failed` (retained) |
 | `telemetry`, `button`, `jack` | As above |
 

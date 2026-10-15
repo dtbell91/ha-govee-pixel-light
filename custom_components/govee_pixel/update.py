@@ -1,14 +1,14 @@
 """Update entity for pixeld, the custom firmware's display daemon (pixeld connection only).
 
 New builds are the GitHub releases of dtbell91/pixeld. To install one, Home Assistant downloads the
-armv7 binary, checks it against the release's SHA-256 and sends it to the light over MQTT. The light
-runs it on trial: it keeps it once it has been healthy for a minute, and otherwise goes back to the
-build it had. The light itself never reaches the internet.
+armv7 binary, checks it against the release's SHA-256 and serves it to the light (the same way as
+effect files); the install request goes over MQTT with the URL and checksum. The light runs the build on
+trial: it keeps it once it has been healthy for a minute, and otherwise goes back to the build it had.
+The light itself never reaches the internet.
 """
 from __future__ import annotations
 
 import asyncio
-import gzip
 import hashlib
 import logging
 import re
@@ -28,6 +28,8 @@ from homeassistant.helpers.event import async_track_time_interval
 
 from . import GoveePixelConfigEntry
 from .const import CONF_CONNECTION, CONNECTION_PIXELD, DOMAIN
+from .display import file_url
+from .effect_server import async_get_store
 from .iot import IotError
 
 _LOGGER = logging.getLogger(__name__)
@@ -148,13 +150,13 @@ class PixeldUpdate(UpdateEntity):
         else:
             raise HomeAssistantError("No pixeld release known yet")
         binary, sha = await self._async_download(release)
-        gz = await self.hass.async_add_executor_job(gzip.compress, binary)
+        url = file_url(self.hass, self.entry, async_get_store(self.hass).add(binary))  # served for 10 min
         self._target = release["tag_name"]
         self._outcome = self.hass.loop.create_future()
         self._attr_in_progress = True
         self.async_write_ha_state()
         try:
-            await self.link.async_send_update(sha, gz)
+            await self.link.async_send_update(url, sha)
             async with asyncio.timeout(INSTALL_TIMEOUT):
                 await self._outcome
         except IotError as err:

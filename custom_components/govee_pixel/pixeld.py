@@ -14,7 +14,8 @@ Topics under the prefix (default `govee/h8630/`):
     px/need            <- {"keys": [...]}  content the light is missing; answered on px/content/<key>
     px/content/<key>   -> PNG / GIF bytes
     telemetry, button, jack <- as for the telemetry layer (see telemetry.py)
-    px/update/<sha256> -> gzipped pixeld build to install (not retained); px/update/rollback -> previous build
+    px/update/install  -> {"url", "sha256"}: download and install a pixeld build (not retained; the build itself
+                          is served over HTTP, as brokers limit message size); px/update/rollback -> previous
     px/update/state    <- {"state", "version", "detail"} (retained): installing, restarting, trial, ok,
                           rolled_back, failed
 """
@@ -259,9 +260,9 @@ class PixeldLink:
         await self._async_publish("px/show", json.dumps({"key": key, "hold": hold, "name": name[:64]}))
         return key
 
-    async def async_send_update(self, sha256: str, gz: bytes) -> None:
-        """Send a gzipped pixeld build; the light checks it, installs it on trial and restarts into it."""
-        await self._async_publish(f"px/update/{sha256}", gz)
+    async def async_send_update(self, url: str, sha256: str) -> None:
+        """Have the light download a pixeld build, check it, install it on trial and restart into it."""
+        await self._async_publish("px/update/install", json.dumps({"url": url, "sha256": sha256}))
 
     async def async_set_playlist(self, items: list[dict[str, Any]]) -> None:
         """items: {"name", "key", "duration"}; the light asks for the content it doesn't have."""
