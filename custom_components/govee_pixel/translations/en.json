@@ -220,6 +220,11 @@
           }
         }
       }
+    },
+    "update": {
+      "pixeld": {
+        "name": "pixeld"
+      }
     }
   },
   "selector": {

@@ -14,6 +14,9 @@ Topics under the prefix (default `govee/h8630/`):
     px/need            <- {"keys": [...]}  content the light is missing; answered on px/content/<key>
     px/content/<key>   -> PNG / GIF bytes
     telemetry, button, jack <- as for the telemetry layer (see telemetry.py)
+    px/update/<sha256> -> gzipped pixeld build to install (not retained); px/update/rollback -> previous build
+    px/update/state    <- {"state", "version", "detail"} (retained): installing, restarting, trial, ok,
+                          rolled_back, failed
 """
 from __future__ import annotations
 
@@ -71,6 +74,8 @@ class PixeldLink:
         self.online: bool | None = None
         self.info: dict[str, Any] | None = None
         self.state: dict[str, Any] | None = None
+        self.update_state: dict[str, Any] | None = None
+        self._info_listeners: list[Callable[[], None]] = []
         self._broker_connected = False
         self._unsubscribe: list[Callable[[], None]] = []
         self._availability_listeners: list[Callable[[], None]] = []
@@ -91,6 +96,7 @@ class PixeldLink:
             await mqtt.async_subscribe(self._hass, f"{p}px/info", self._on_info, qos=1),
             await mqtt.async_subscribe(self._hass, f"{p}px/state", self._on_state, qos=1),
             await mqtt.async_subscribe(self._hass, f"{p}px/need", self._on_need, qos=1),
+            await mqtt.async_subscribe(self._hass, f"{p}px/update/state", self._on_update_state, qos=1),
             await mqtt.async_subscribe(self._hass, f"{p}telemetry", self._wrap(self.telemetry.async_handle_telemetry)),
             await mqtt.async_subscribe(self._hass, f"{p}jack", self._wrap(self.telemetry.async_handle_jack)),
             await mqtt.async_subscribe(self._hass, f"{p}button", self._wrap(self.telemetry.async_handle_button), qos=1),
@@ -120,6 +126,16 @@ class PixeldLink:
     def async_add_availability_listener(self, cb: Callable[[], None]) -> Callable[[], None]:
         self._availability_listeners.append(cb)
         return lambda: self._availability_listeners.remove(cb)
+
+    def async_add_info_listener(self, cb: Callable[[], None]) -> Callable[[], None]:
+        """Called when px/info or px/update/state changes (e.g. pixeld updated)."""
+        self._info_listeners.append(cb)
+        return lambda: self._info_listeners.remove(cb)
+
+    @callback
+    def _info_changed(self) -> None:
+        for cb in list(self._info_listeners):
+            cb()
 
     def async_add_state_listener(self, cb: Callable[[dict], None]) -> Callable[[], None]:
         self._state_listeners.append(cb)
@@ -153,6 +169,17 @@ class PixeldLink:
         except ValueError:
             return
         self._info_seen.set()
+        self._info_changed()
+
+    @callback
+    def _on_update_state(self, msg: mqtt.ReceiveMessage) -> None:
+        try:
+            state = json.loads(msg.payload)
+        except ValueError:
+            return
+        if isinstance(state, dict):
+            self.update_state = state
+            self._info_changed()
 
     @callback
     def _on_state(self, msg: mqtt.ReceiveMessage) -> None:
@@ -231,6 +258,10 @@ class PixeldLink:
         await self._async_publish(f"px/content/{key}", data)
         await self._async_publish("px/show", json.dumps({"key": key, "hold": hold, "name": name[:64]}))
         return key
+
+    async def async_send_update(self, sha256: str, gz: bytes) -> None:
+        """Send a gzipped pixeld build; the light checks it, installs it on trial and restarts into it."""
+        await self._async_publish(f"px/update/{sha256}", gz)
 
     async def async_set_playlist(self, items: list[dict[str, Any]]) -> None:
         """items: {"name", "key", "duration"}; the light asks for the content it doesn't have."""

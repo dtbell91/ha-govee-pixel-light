@@ -76,6 +76,12 @@ Compared with Govee's protocol:
 - **Live streaming:** pixeld also accepts DDP on UDP port 4048 (32×32 RGB, row-major from the top-left, 1024
   pixels), as sent by LedFx, xLights, Hyperion and other WLED-style tools. Streamed frames take over the panel
   while they arrive; the playlist returns 2 s after they stop. Display shows `stream` meanwhile.
+- **Updates:** the **pixeld** update entity offers new releases of [pixeld](https://github.com/dtbell91/pixeld).
+  Installing one downloads it to Home Assistant, checks its SHA-256 and sends it to the light over MQTT (the
+  light never goes online). The light runs the new build on trial and keeps it once it has been healthy for a
+  minute; if it fails to start or doesn't confirm, the light goes back to the build it had and the update
+  reports the rollback. Older releases can be installed too (`update.install` with `version`). Needs a firmware
+  whose native layer supports app updates (the entity's `light_supports_updates` attribute).
 
 | Topic (under the prefix) | |
 |---|---|
@@ -86,6 +92,8 @@ Compared with Govee's protocol:
 | `px/show` | `{"key", "hold", "name"}` |
 | `px/playlist` | `{"items": [{"name", "key", "duration"}]}` (retained) |
 | `px/need` / `px/content/<key>` | The light asks for missing content; Home Assistant sends the bytes |
+| `px/update/<sha256>` | A gzipped pixeld build to install (not retained); `px/update/rollback` returns to the previous build |
+| `px/update/state` | `{"state", "version", "detail"}`: `installing`, `restarting`, `trial`, `ok`, `rolled_back`, `failed` (retained) |
 | `telemetry`, `button`, `jack` | As above |
 
 ### Options
@@ -110,6 +118,7 @@ Compared with Govee's protocol:
 | Last image | Preview of the last picture or animation sent |
 | Power / Mode / Volume / Customize button | Event entities (`press`, `long_press`) for the light's physical buttons, for automations. The light still acts on each press itself. Local MQTT with `button` messages only |
 | Headphones | Whether headphones are plugged in. Local MQTT with `jack` messages only |
+| pixeld (update) | Installed and latest [pixeld](https://github.com/dtbell91/pixeld) release; install, release notes, specific versions. pixeld only |
 | WiFi signal, Last boot, Memory available, Custom firmware (diagnostic) | From `telemetry` messages (Storage free and IP address are there too, disabled by default). The firmware version also shows on the device page. Local MQTT only |
 
 The light, message and display entities become unavailable when the light can't be reached
