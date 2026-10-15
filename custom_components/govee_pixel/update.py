@@ -95,6 +95,10 @@ class PixeldUpdate(UpdateEntity):
         self.async_on_remove(async_track_time_interval(self.hass, self._async_check, CHECK_EVERY))
         self.hass.async_create_background_task(self._async_check(), f"{DOMAIN} pixeld release check")
 
+    async def async_update(self) -> None:
+        """homeassistant.update_entity: look for a new release now."""
+        await self._async_check()
+
     async def async_release_notes(self) -> str | None:
         return (self._release or {}).get("body")
 
@@ -167,6 +171,7 @@ class PixeldUpdate(UpdateEntity):
             self._attr_in_progress = False
             self._outcome = None
             self.async_write_ha_state()
+            self.hass.async_create_background_task(self._async_check(), f"{DOMAIN} pixeld release check")
 
     @callback
     def _on_info(self) -> None:
