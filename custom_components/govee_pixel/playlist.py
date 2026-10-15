@@ -34,7 +34,7 @@ from homeassistant.helpers.template import Template, result_as_boolean
 from . import content, looplay, payload
 from .const import (
     CONF_PLAYBACK, CONF_RECLAIM, CONF_REFRESH_MINUTES, CONF_RESUME, DEFAULT_REFRESH_MINUTES, PLAYBACK_HA, PLAYBACK_LIGHT,
-    RESUME_MODE_PACKET, RESUME_REPUSH,
+    RESUME_MODE_PACKET, RESUME_REPUSH, DOMAIN,
 )
 from .display import async_push_effect, async_render, async_set_preview, file_url
 from .effect_server import async_get_store
@@ -198,11 +198,23 @@ class PlaylistController:
             await async_push_effect(self.hass, self.entry, self.dev, effect)
         self._changed(save=True)
 
+    def _in_room(self, item: dict) -> bool:
+        """now_playing with this_room_only: only while the music plays in the light's area."""
+        if item["type"] != content.KIND_NOW_PLAYING or not item["options"].get(content.ATTR_THIS_ROOM_ONLY):
+            return True
+        from homeassistant.helpers import device_registry as dr
+
+        device = dr.async_get(self.hass).async_get_device(identifiers={(DOMAIN, self.dev.device)})
+        return content.playing_in_area(self.hass, item["options"][content.ATTR_MEDIA_PLAYER],
+                                       device.area_id if device else None)
+
     async def _async_render_items(self) -> list[tuple[dict, str, list[payload.Frame] | None]]:
         """Render every item: (item, file key, frames). Failed items keep their last good file."""
         store = async_get_store(self.hass)
         out = []
         for item in self.items:
+            if not self._in_room(item):
+                continue
             try:
                 prepared = await content.async_prepare(
                     self.hass, item["type"], self._validated(item["type"], item["options"]))
@@ -499,6 +511,8 @@ class PixeldPlaylistController(PlaylistController):
                 continue
             if item["type"] in content.CARD_KINDS:
                 out.append((item, None, None))  # drawn by the light; see _card()
+                continue
+            if not self._in_room(item):
                 continue
             try:
                 prepared = await content.async_prepare(

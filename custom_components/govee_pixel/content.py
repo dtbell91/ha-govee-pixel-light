@@ -6,6 +6,8 @@ redrawn with fresh data every time they come round.
 """
 from __future__ import annotations
 
+import asyncio
+
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -41,6 +43,7 @@ KIND_NOW_PLAYING = "now_playing"  # album art + scrolling title while a media pl
 ATTR_CALENDAR_ENTITY = "calendar_entity"
 ATTR_HOURS = "hours"
 ATTR_MEDIA_PLAYER = "media_player_entity"
+ATTR_THIS_ROOM_ONLY = "this_room_only"  # now_playing: only when playing in the light's area
 
 
 class NothingToShow(HomeAssistantError):
@@ -108,6 +111,7 @@ CALENDAR_OPTIONS = {
 NOW_PLAYING_OPTIONS = {
     vol.Required(ATTR_MEDIA_PLAYER): cv.entity_domain("media_player"),
     vol.Optional(ATTR_COLOR): RGB,
+    vol.Optional(ATTR_THIS_ROOM_ONLY, default=False): cv.boolean,
 }
 OPTIONS[KIND_CALENDAR] = CALENDAR_OPTIONS
 OPTIONS[KIND_NOW_PLAYING] = NOW_PLAYING_OPTIONS
@@ -185,6 +189,16 @@ def _generated(render: Callable[[], animations.Frames]) -> Render:
     return run
 
 
+async def _read_body(resp: aiohttp.ClientResponse, limit: int) -> bytes:
+    """The whole response body, up to limit + 1 bytes (`content.read(n)` returns only what has arrived)."""
+    body = bytearray()
+    async for chunk in resp.content.iter_chunked(64 * 1024):
+        body += chunk
+        if len(body) > limit:
+            break
+    return bytes(body)
+
+
 async def _load_image(hass: HomeAssistant, data: dict) -> bytes:
     if path := data.get(ATTR_IMAGE_PATH):
         if not hass.config.is_allowed_path(path):
@@ -198,7 +212,7 @@ async def _load_image(hass: HomeAssistant, data: dict) -> bytes:
         try:
             async with async_get_clientsession(hass).get(url, timeout=aiohttp.ClientTimeout(total=30)) as r:
                 r.raise_for_status()
-                body = await r.content.read(MAX_SOURCE_BYTES + 1)
+                body = await _read_body(r, MAX_SOURCE_BYTES)
         except aiohttp.ClientError as err:
             raise HomeAssistantError(f"Cannot fetch {url}: {err}") from err
         if len(body) > MAX_SOURCE_BYTES:
@@ -321,8 +335,8 @@ async def _prepare_now_playing(hass: HomeAssistant, data: dict) -> Prepared:
             url = picture if picture.startswith("http") else get_url(hass, prefer_external=False) + picture
             async with async_get_clientsession(hass).get(url, timeout=aiohttp.ClientTimeout(total=15)) as r:
                 r.raise_for_status()
-                art = await r.content.read(MAX_SOURCE_BYTES)
-        except (aiohttp.ClientError, NoURLAvailableError) as err:
+                art = await _read_body(r, MAX_SOURCE_BYTES)
+        except (aiohttp.ClientError, asyncio.TimeoutError, NoURLAvailableError) as err:
             _LOGGER.debug("No artwork for %s: %s", entity_id, err)
     caption = " - ".join(x for x in (title, artist) if x).upper()
     color = tuple(data[ATTR_COLOR]) if data.get(ATTR_COLOR) else (255, 255, 255)
@@ -330,10 +344,46 @@ async def _prepare_now_playing(hass: HomeAssistant, data: dict) -> Prepared:
     def render(size: int) -> list[payload.Frame]:
         cover = None
         if art:
-            cover = payload.frames_from_image(art, size=size, fit=payload.FIT_COVER, max_frames=1)[0].image
+            try:
+                cover = payload.frames_from_image(art, size=size, fit=payload.FIT_COVER, max_frames=1)[0].image
+            except (OSError, ValueError) as err:  # unreadable artwork: show the track without it, never a stale one
+                _LOGGER.debug("Artwork for %s unreadable: %s", entity_id, err)
         return [payload.Frame(im, ms) for im, ms in animations.now_playing(cover, caption, color, size)]
 
     return Prepared(render, (0, 0, 0), f"now playing {title}")
+
+
+def playing_in_area(hass: HomeAssistant, entity_id: str, area_id: str | None) -> bool:
+    """Whether a media player plays in area_id: the player itself is there, or what it reports playing on
+    (`source`, e.g. a Spotify Connect device) is the name of a media player or device there."""
+    from homeassistant.helpers import device_registry as dr, entity_registry as er
+
+    state = hass.states.get(entity_id)
+    if area_id is None or state is None or state.state != "playing":
+        return False
+    ent_reg, dev_reg = er.async_get(hass), dr.async_get(hass)
+
+    def area_of(entry: er.RegistryEntry | None) -> str | None:
+        if entry is None:
+            return None
+        if entry.area_id:
+            return entry.area_id
+        device = dev_reg.async_get(entry.device_id) if entry.device_id else None
+        return device.area_id if device else None
+
+    if area_of(ent_reg.async_get(entity_id)) == area_id:
+        return True
+    if not (source := str(state.attributes.get("source") or "").strip().casefold()):
+        return False
+    names: set[str] = set()
+    for entry in ent_reg.entities.values():
+        if entry.domain != "media_player" or area_of(entry) != area_id:
+            continue
+        if (player := hass.states.get(entry.entity_id)) is not None:
+            names.add(player.name.casefold())
+        if entry.device_id and (device := dev_reg.async_get(entry.device_id)) is not None:
+            names.update(n.casefold() for n in (device.name_by_user, device.name) if n)
+    return source in names
 
 
 async def _prepare_clock(hass: HomeAssistant, data: dict) -> Prepared:

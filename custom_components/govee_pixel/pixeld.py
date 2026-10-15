@@ -46,9 +46,21 @@ _LOGGER = logging.getLogger(__name__)
 RECENT_CONTENT = 32  # one-off images kept to answer the light's requests
 
 
+def _shared_palette(images: list[Image.Image]) -> list[Image.Image]:
+    """Quantize all frames to one palette without dithering, so a pixel that doesn't change between frames
+    keeps exactly its colour (per-frame palettes and dithering made still parts, e.g. album art under
+    scrolling text, flicker)."""
+    w, h = images[0].size
+    sheet = Image.new("RGB", (w, h * len(images)))
+    for i, im in enumerate(images):
+        sheet.paste(im, (0, i * h))
+    palette = sheet.quantize(256, method=Image.Quantize.MEDIANCUT, dither=Image.Dither.NONE)
+    return [im.quantize(palette=palette, dither=Image.Dither.NONE) for im in images]
+
+
 def encode_content(frames: list[payload.Frame], source: bytes | None = None) -> bytes:
-    """Frames -> bytes pixeld decodes: PNG for a still, GIF (per-frame palettes) for an animation;
-    a source GIF already at the panel size is sent unchanged."""
+    """Frames -> bytes pixeld decodes: PNG for a still, GIF (one shared palette, no dithering) for an
+    animation; a source GIF already at the panel size is sent unchanged."""
     size = frames[0].image.width
     if source is not None and len(frames) > 1 and payload.gif_passthrough(source, size) is not None:
         return source
@@ -56,7 +68,7 @@ def encode_content(frames: list[payload.Frame], source: bytes | None = None) -> 
     if len(frames) == 1:
         frames[0].image.convert("RGB").save(buf, format="PNG", optimize=True)
     else:
-        images = [f.image.convert("RGB") for f in frames]
+        images = _shared_palette([f.image.convert("RGB") for f in frames])
         images[0].save(buf, format="GIF", save_all=True, append_images=images[1:], loop=0,
                        duration=[max(20, f.duration) for f in frames], disposal=1, optimize=False)
     return buf.getvalue()
