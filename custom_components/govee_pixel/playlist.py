@@ -451,7 +451,7 @@ class PixeldPlaylistController(PlaylistController):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self._track_signature: tuple | None = None
-        self._now_playing: dict[str, tuple | None] = {}  # now_playing item -> the track last seen
+        self._seen: dict[str, tuple | None] = {}  # media player -> its track when last seen available
         self._track_cancels: list[CALLBACK_TYPE] = []
         self._redraw_cancel: CALLBACK_TYPE | None = None
 
@@ -564,37 +564,43 @@ class PixeldPlaylistController(PlaylistController):
             self._changed(save=True)
             await self._async_show_new_tracks(rendered)
 
-    def _track(self, item: dict) -> tuple | None:
-        """What a now_playing item shows now: (player, title, artist, album), or None if nothing."""
-        try:
-            options = self._render_options(item)
-        except HomeAssistantError:
+    def _player_track(self, entity_id: str) -> tuple | None | bool:
+        """A player's track (title, artist, album), None if it isn't playing, False if unavailable."""
+        state = self.hass.states.get(entity_id)
+        if state is None or state.state in ("unavailable", "unknown"):
+            return False
+        if state.state != "playing":
             return None
-        if options is None:
-            return None
-        player = options[content.ATTR_MEDIA_PLAYER][0]
-        attrs = (state := self.hass.states.get(player)) and state.attributes or {}
-        return (player, attrs.get("media_title"), attrs.get("media_artist"), attrs.get("media_album_name"))
+        a = state.attributes
+        return (a.get("media_title"), a.get("media_artist"), a.get("media_album_name"))
 
     async def _async_show_new_tracks(self, rendered: list) -> None:
-        """When a now_playing item's track changes (or music starts), show it now for its duration; the
-        light then carries on with the rotation. Not over something shown on purpose, and not on the
-        first look after starting up."""
+        """When the player a now_playing item shows changes track (or starts playing), show the item now for
+        its duration; the light then carries on with the rotation. Only for a player seen before (so not
+        when it, or Home Assistant, comes back up), and not over something shown on purpose."""
         keys = {item["name"]: key for item, key, _ in rendered if key}
         for item in self.items:
             if item["type"] != content.KIND_NOW_PLAYING:
                 continue
-            name = item["name"]
-            track = self._track(item) if name in keys else None
-            first = name not in self._now_playing
-            changed = self._now_playing.get(name) != track
-            self._now_playing[name] = track
-            if first or not changed or track is None:
+            try:
+                options = self._validated(item["type"], item["options"])
+            except HomeAssistantError:
+                continue
+            seen_before = dict(self._seen)
+            for player in options[content.ATTR_MEDIA_PLAYER]:
+                if (track := self._player_track(player)) is not False:
+                    self._seen[player] = track
+            if (key := keys.get(item["name"])) is None:
+                continue
+            if (current := self._render_options(item)) is None:  # stopped since it was rendered
+                continue
+            player = current[content.ATTR_MEDIA_PLAYER][0]
+            if player not in seen_before or seen_before[player] == self._seen.get(player):
                 continue
             if not self.active or self.status != STATUS_LIGHT or self.interrupt_until is not None:
                 continue
             try:
-                await self.link.async_show_key(keys[name], item["duration"], name)
+                await self.link.async_show_key(key, item["duration"], item["name"])
             except IotError as err:
                 _LOGGER.debug("%s: couldn't show the new track: %s", self.dev.name, err)
 
