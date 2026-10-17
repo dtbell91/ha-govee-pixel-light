@@ -272,6 +272,10 @@ class PixeldLink:
         await self._async_publish("px/show", json.dumps({"key": key, "hold": hold, "name": name[:64]}))
         return key
 
+    async def async_show_key(self, key: str, hold: float, name: str) -> None:
+        """Show content the light has (or will ask for) now, for hold seconds, then back to the playlist."""
+        await self._async_publish("px/show", json.dumps({"key": key, "hold": hold, "name": name[:64]}))
+
     async def async_send_update(self, url: str, sha256: str) -> None:
         """Have the light download a pixeld build, check it, install it on trial and restart into it."""
         await self._async_publish("px/update/install", json.dumps({"url": url, "sha256": sha256}))

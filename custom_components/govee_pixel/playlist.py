@@ -451,6 +451,7 @@ class PixeldPlaylistController(PlaylistController):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self._track_signature: tuple | None = None
+        self._now_playing: dict[str, tuple | None] = {}  # now_playing item -> the track last seen
         self._track_cancels: list[CALLBACK_TYPE] = []
         self._redraw_cancel: CALLBACK_TYPE | None = None
 
@@ -561,6 +562,41 @@ class PixeldPlaylistController(PlaylistController):
                 self.status = STATUS_LIGHT
             self.last_error = None
             self._changed(save=True)
+            await self._async_show_new_tracks(rendered)
+
+    def _track(self, item: dict) -> tuple | None:
+        """What a now_playing item shows now: (player, title, artist, album), or None if nothing."""
+        try:
+            options = self._render_options(item)
+        except HomeAssistantError:
+            return None
+        if options is None:
+            return None
+        player = options[content.ATTR_MEDIA_PLAYER][0]
+        attrs = (state := self.hass.states.get(player)) and state.attributes or {}
+        return (player, attrs.get("media_title"), attrs.get("media_artist"), attrs.get("media_album_name"))
+
+    async def _async_show_new_tracks(self, rendered: list) -> None:
+        """When a now_playing item's track changes (or music starts), show it now for its duration; the
+        light then carries on with the rotation. Not over something shown on purpose, and not on the
+        first look after starting up."""
+        keys = {item["name"]: key for item, key, _ in rendered if key}
+        for item in self.items:
+            if item["type"] != content.KIND_NOW_PLAYING:
+                continue
+            name = item["name"]
+            track = self._track(item) if name in keys else None
+            first = name not in self._now_playing
+            changed = self._now_playing.get(name) != track
+            self._now_playing[name] = track
+            if first or not changed or track is None:
+                continue
+            if not self.active or self.status != STATUS_LIGHT or self.interrupt_until is not None:
+                continue
+            try:
+                await self.link.async_show_key(keys[name], item["duration"], name)
+            except IotError as err:
+                _LOGGER.debug("%s: couldn't show the new track: %s", self.dev.name, err)
 
     def _show_if(self, item: dict) -> bool:
         if not (source := item.get("show_if")):
