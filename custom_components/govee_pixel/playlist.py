@@ -198,26 +198,27 @@ class PlaylistController:
             await async_push_effect(self.hass, self.entry, self.dev, effect)
         self._changed(save=True)
 
-    def _in_room(self, item: dict) -> bool:
-        """now_playing with this_room_only: only while the music plays in the light's area."""
-        if item["type"] != content.KIND_NOW_PLAYING or not item["options"].get(content.ATTR_THIS_ROOM_ONLY):
-            return True
+    def _render_options(self, item: dict) -> dict | None:
+        """The item's options for rendering; now_playing narrowed to the player to show (None: nothing
+        playing, or not in the room)."""
+        options = self._validated(item["type"], item["options"])
+        if item["type"] != content.KIND_NOW_PLAYING:
+            return options
         from homeassistant.helpers import device_registry as dr
 
         device = dr.async_get(self.hass).async_get_device(identifiers={(DOMAIN, self.dev.device)})
-        return content.playing_in_area(self.hass, item["options"][content.ATTR_MEDIA_PLAYER],
-                                       device.area_id if device else None)
+        player = content.pick_player(self.hass, options, device.area_id if device else None)
+        return None if player is None else {**options, content.ATTR_MEDIA_PLAYER: [player]}
 
     async def _async_render_items(self) -> list[tuple[dict, str, list[payload.Frame] | None]]:
         """Render every item: (item, file key, frames). Failed items keep their last good file."""
         store = async_get_store(self.hass)
         out = []
         for item in self.items:
-            if not self._in_room(item):
-                continue
             try:
-                prepared = await content.async_prepare(
-                    self.hass, item["type"], self._validated(item["type"], item["options"]))
+                if (options := self._render_options(item)) is None:
+                    continue
+                prepared = await content.async_prepare(self.hass, item["type"], options)
                 effect, frames = await async_render(self.hass, self.entry, self.dev, prepared)
                 out.append((item, store.add(effect), frames))
             except content.NothingToShow as err:
@@ -512,11 +513,10 @@ class PixeldPlaylistController(PlaylistController):
             if item["type"] in content.CARD_KINDS:
                 out.append((item, None, None))  # drawn by the light; see _card()
                 continue
-            if not self._in_room(item):
-                continue
             try:
-                prepared = await content.async_prepare(
-                    self.hass, item["type"], self._validated(item["type"], item["options"]))
+                if (options := self._render_options(item)) is None:
+                    continue
+                prepared = await content.async_prepare(self.hass, item["type"], options)
                 frames = await async_render_frames(self.hass, self.dev, prepared)
                 data = await self.hass.async_add_executor_job(encode_content, frames, prepared.source)
                 out.append((item, self.link.add_content(data, playlist=True), frames))

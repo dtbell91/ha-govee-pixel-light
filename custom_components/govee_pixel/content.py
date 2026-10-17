@@ -43,7 +43,8 @@ KIND_NOW_PLAYING = "now_playing"  # album art + scrolling title while a media pl
 ATTR_CALENDAR_ENTITY = "calendar_entity"
 ATTR_HOURS = "hours"
 ATTR_MEDIA_PLAYER = "media_player_entity"
-ATTR_THIS_ROOM_ONLY = "this_room_only"  # now_playing: only when playing in the light's area
+ATTR_THIS_ROOM_ONLY = "this_room_only"  # now_playing: only when playing in the light's area ...
+ATTR_AREAS = "areas"  # ... or in these areas (e.g. an open-plan space split into several HA areas)
 
 
 class NothingToShow(HomeAssistantError):
@@ -109,9 +110,11 @@ CALENDAR_OPTIONS = {
     vol.Optional(ATTR_SIZE, default="auto"): vol.In(["auto", "large"]),
 }
 NOW_PLAYING_OPTIONS = {
-    vol.Required(ATTR_MEDIA_PLAYER): cv.entity_domain("media_player"),
+    # one or more players; the first that's playing (in the room, if limited to it) is shown
+    vol.Required(ATTR_MEDIA_PLAYER): vol.All(cv.ensure_list, [cv.entity_domain("media_player")], vol.Length(min=1)),
     vol.Optional(ATTR_COLOR): RGB,
     vol.Optional(ATTR_THIS_ROOM_ONLY, default=False): cv.boolean,
+    vol.Optional(ATTR_AREAS): vol.All(cv.ensure_list, [cv.string]),
 }
 OPTIONS[KIND_CALENDAR] = CALENDAR_OPTIONS
 OPTIONS[KIND_NOW_PLAYING] = NOW_PLAYING_OPTIONS
@@ -124,7 +127,7 @@ def source_entities(kind: str, data: dict) -> list[str]:
     if kind == KIND_CALENDAR:
         return list(data[ATTR_CALENDAR_ENTITY])
     if kind == KIND_NOW_PLAYING:
-        return [data[ATTR_MEDIA_PLAYER]]
+        return list(data[ATTR_MEDIA_PLAYER])
     if kind == KIND_IMAGE and data.get(ATTR_IMAGE_ENTITY, "").startswith("image."):
         return [data[ATTR_IMAGE_ENTITY]]
     return []
@@ -323,10 +326,11 @@ async def _prepare_calendar(hass: HomeAssistant, data: dict) -> Prepared:
 async def _prepare_now_playing(hass: HomeAssistant, data: dict) -> Prepared:
     from homeassistant.helpers.network import NoURLAvailableError, get_url
 
-    entity_id = data[ATTR_MEDIA_PLAYER]
+    entity_id = next((e for e in data[ATTR_MEDIA_PLAYER] if (s := hass.states.get(e)) and s.state == "playing"),
+                     None)
+    if entity_id is None:
+        raise NothingToShow("nothing is playing")
     state = hass.states.get(entity_id)
-    if state is None or state.state != "playing":
-        raise NothingToShow(f"{entity_id} is not playing")
     title = state.attributes.get("media_title") or ""
     artist = state.attributes.get("media_artist") or state.attributes.get("media_album_artist") or ""
     art = None
@@ -353,13 +357,32 @@ async def _prepare_now_playing(hass: HomeAssistant, data: dict) -> Prepared:
     return Prepared(render, (0, 0, 0), f"now playing {title}")
 
 
-def playing_in_area(hass: HomeAssistant, entity_id: str, area_id: str | None) -> bool:
-    """Whether a media player plays in area_id: the player itself is there, or what it reports playing on
-    (`source`, e.g. a Spotify Connect device) is the name of a media player or device there."""
+def resolve_areas(hass: HomeAssistant, areas: list[str]) -> set[str]:
+    """Area ids for area ids, names or aliases (any case); unknown ones are logged and left out."""
+    from homeassistant.helpers import area_registry as ar
+
+    reg = ar.async_get(hass)
+    out = set()
+    for a in areas:
+        area = reg.async_get_area(a) or reg.async_get_area_by_name(a)
+        if area is None:
+            key = a.strip().casefold()
+            area = next((x for x in reg.async_list_areas()
+                         if x.name.casefold() == key or key in {al.casefold() for al in x.aliases}), None)
+        if area is None:
+            _LOGGER.warning("now_playing: unknown area %r", a)
+            continue
+        out.add(area.id)
+    return out
+
+
+def playing_in_areas(hass: HomeAssistant, entity_id: str, area_ids: set[str]) -> bool:
+    """Whether a media player plays in one of area_ids: the player itself is there, or what it reports
+    playing on (`source`, e.g. a Spotify Connect device) is the name of a media player or device there."""
     from homeassistant.helpers import device_registry as dr, entity_registry as er
 
     state = hass.states.get(entity_id)
-    if area_id is None or state is None or state.state != "playing":
+    if not area_ids or state is None or state.state != "playing":
         return False
     ent_reg, dev_reg = er.async_get(hass), dr.async_get(hass)
 
@@ -371,19 +394,38 @@ def playing_in_area(hass: HomeAssistant, entity_id: str, area_id: str | None) ->
         device = dev_reg.async_get(entry.device_id) if entry.device_id else None
         return device.area_id if device else None
 
-    if area_of(ent_reg.async_get(entity_id)) == area_id:
+    if area_of(ent_reg.async_get(entity_id)) in area_ids:
         return True
     if not (source := str(state.attributes.get("source") or "").strip().casefold()):
         return False
+    # e.g. Music Assistant's Spotify Connect players: "Kitchen | Music Assistant"
+    sources = {source, source.split("|")[0].strip()}
     names: set[str] = set()
     for entry in ent_reg.entities.values():
-        if entry.domain != "media_player" or area_of(entry) != area_id:
+        if entry.domain != "media_player" or area_of(entry) not in area_ids:
             continue
         if (player := hass.states.get(entry.entity_id)) is not None:
             names.add(player.name.casefold())
         if entry.device_id and (device := dev_reg.async_get(entry.device_id)) is not None:
             names.update(n.casefold() for n in (device.name_by_user, device.name) if n)
-    return source in names
+    return bool(sources & names)
+
+
+def pick_player(hass: HomeAssistant, data: dict, light_area: str | None) -> str | None:
+    """The now_playing item's player to show: the first listed that's playing, in the room if limited to it
+    (`areas`, else the light's own area with `this_room_only`)."""
+    areas = None
+    if data.get(ATTR_AREAS):
+        areas = resolve_areas(hass, data[ATTR_AREAS])
+    elif data.get(ATTR_THIS_ROOM_ONLY):
+        areas = {light_area} if light_area else set()
+    for entity_id in data[ATTR_MEDIA_PLAYER]:
+        state = hass.states.get(entity_id)
+        if state is None or state.state != "playing":
+            continue
+        if areas is None or playing_in_areas(hass, entity_id, areas):
+            return entity_id
+    return None
 
 
 async def _prepare_clock(hass: HomeAssistant, data: dict) -> Prepared:
