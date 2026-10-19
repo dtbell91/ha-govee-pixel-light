@@ -110,24 +110,34 @@ CALENDAR_OPTIONS = {
     vol.Optional(ATTR_SIZE, default="auto"): vol.In(["auto", "large"]),
 }
 NOW_PLAYING_OPTIONS = {
-    # one or more players; the first that's playing (in the room, if limited to it) is shown
-    vol.Required(ATTR_MEDIA_PLAYER): vol.All(cv.ensure_list, [cv.entity_domain("media_player")], vol.Length(min=1)),
+    # players to show, in order of preference; the first that's playing (in the room, if limited to it) is
+    # shown. Limited to a room (areas / this_room_only), any other player playing there is shown too, so
+    # the list can be left out.
+    vol.Optional(ATTR_MEDIA_PLAYER, default=list): vol.All(cv.ensure_list, [cv.entity_domain("media_player")]),
     vol.Optional(ATTR_COLOR): RGB,
     vol.Optional(ATTR_THIS_ROOM_ONLY, default=False): cv.boolean,
     vol.Optional(ATTR_AREAS): vol.All(cv.ensure_list, [cv.string]),
 }
+
+
+def _players_or_room(data: dict) -> dict:
+    if not data[ATTR_MEDIA_PLAYER] and not data.get(ATTR_AREAS) and not data[ATTR_THIS_ROOM_ONLY]:
+        raise vol.Invalid(f"now_playing needs {ATTR_MEDIA_PLAYER}, {ATTR_AREAS} or {ATTR_THIS_ROOM_ONLY}")
+    return data
+
+
 OPTIONS[KIND_CALENDAR] = CALENDAR_OPTIONS
 OPTIONS[KIND_NOW_PLAYING] = NOW_PLAYING_OPTIONS
 
 
-def source_entities(kind: str, data: dict) -> list[str]:
+def source_entities(hass: HomeAssistant, kind: str, data: dict) -> list[str]:
     """Entities whose changes should redraw an item of this kind."""
     if kind == KIND_WEATHER and data.get(ATTR_WEATHER_ENTITY):
         return [data[ATTR_WEATHER_ENTITY]]
     if kind == KIND_CALENDAR:
         return list(data[ATTR_CALENDAR_ENTITY])
     if kind == KIND_NOW_PLAYING:
-        return list(data[ATTR_MEDIA_PLAYER])
+        return candidate_players(hass, data)
     if kind == KIND_IMAGE and data.get(ATTR_IMAGE_ENTITY, "").startswith("image."):
         return [data[ATTR_IMAGE_ENTITY]]
     return []
@@ -163,7 +173,8 @@ def _check_weather(data: dict) -> dict:
     return data
 
 
-CHECKS: dict[str, Callable[[dict], dict]] = {KIND_IMAGE: _check_image, KIND_WEATHER: _check_weather}
+CHECKS: dict[str, Callable[[dict], dict]] = {KIND_IMAGE: _check_image, KIND_WEATHER: _check_weather,
+                                             KIND_NOW_PLAYING: _players_or_room}
 
 
 def options_schema(kind: str) -> vol.Schema:
@@ -411,15 +422,31 @@ def playing_in_areas(hass: HomeAssistant, entity_id: str, area_ids: set[str]) ->
     return bool(sources & names)
 
 
+def candidate_players(hass: HomeAssistant, data: dict) -> list[str]:
+    """The players a now_playing item may show, in order of preference: those listed, then (limited to a
+    room) every other media player, those saying what they play (title and artwork) first, so a speaker's
+    Music Assistant player wins over a bare one playing the same."""
+    listed = list(data[ATTR_MEDIA_PLAYER])
+    if not data.get(ATTR_AREAS) and not data.get(ATTR_THIS_ROOM_ONLY):
+        return listed
+
+    def rank(entity_id: str) -> tuple:
+        a = state.attributes if (state := hass.states.get(entity_id)) else {}
+        return (not a.get("media_title"), not a.get("entity_picture"), entity_id)
+
+    others = sorted((e for e in hass.states.async_entity_ids("media_player") if e not in listed), key=rank)
+    return listed + others
+
+
 def pick_player(hass: HomeAssistant, data: dict, light_area: str | None) -> str | None:
-    """The now_playing item's player to show: the first listed that's playing, in the room if limited to it
-    (`areas`, else the light's own area with `this_room_only`)."""
+    """The now_playing item's player to show: the first candidate that's playing, in the room if limited to
+    it (`areas`, else the light's own area with `this_room_only`)."""
     areas = None
     if data.get(ATTR_AREAS):
         areas = resolve_areas(hass, data[ATTR_AREAS])
     elif data.get(ATTR_THIS_ROOM_ONLY):
         areas = {light_area} if light_area else set()
-    for entity_id in data[ATTR_MEDIA_PLAYER]:
+    for entity_id in candidate_players(hass, data):
         state = hass.states.get(entity_id)
         if state is None or state.state != "playing":
             continue

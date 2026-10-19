@@ -587,7 +587,7 @@ class PixeldPlaylistController(PlaylistController):
             except HomeAssistantError:
                 continue
             seen_before = dict(self._seen)
-            for player in options[content.ATTR_MEDIA_PLAYER]:
+            for player in content.candidate_players(self.hass, options):
                 if (track := self._player_track(player)) is not False:
                     self._seen[player] = track
             if (key := keys.get(item["name"])) is None:
@@ -620,7 +620,7 @@ class PixeldPlaylistController(PlaylistController):
         templates = []
         for item in self.items:
             try:
-                entities.update(content.source_entities(item["type"], self._validated(item["type"], item["options"])))
+                entities.update(content.source_entities(self.hass, item["type"], self._validated(item["type"], item["options"])))
             except HomeAssistantError:
                 pass
             if item.get("show_if"):
