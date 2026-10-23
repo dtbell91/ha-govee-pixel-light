@@ -78,15 +78,17 @@ def _glyph(ch):
     return FONT.get(ch.upper(), FONT["?"])
 
 
-def text(d, s, x, y, c, scale=1, gap=1):
-    """Draw `s` with its top-left at (x, y); returns the x after the last glyph."""
+def text(d, s, x, y, c, scale=1, gap=1, dy=None):
+    """Draw `s` with its top-left at (x, y); returns the x after the last glyph.
+    c: a colour, or a function of the character's index; dy: a function of the index giving a vertical offset."""
     for i, ch in enumerate(s):
         col = c(i) if callable(c) else c
+        cy = y + (dy(i) if dy else 0)
         for k, b in enumerate(_glyph(ch)):
             if b == "1":
                 gx, gy = k % 3, k // 3
-                rect(d, x + gx * scale, y + gy * scale,
-                     x + gx * scale + scale - 1, y + gy * scale + scale - 1, col)
+                rect(d, x + gx * scale, cy + gy * scale,
+                     x + gx * scale + scale - 1, cy + gy * scale + scale - 1, col)
         x += (3 + gap) * scale
     return x
 
@@ -323,34 +325,105 @@ def forecast(days: list[tuple[str, float, float | None]], unit: str = "°C") -> 
 
 # ---------- text ----------
 
+TEXT_COLOR_EFFECTS = ["none", "rainbow", "cycle"]
+TEXT_MOTIONS = ["none", "bounce", "wave"]
+TEXT_LOOP_MS = 2000  # one cycle of the text effects; a message that fits loops over exactly this
+MIN_FRAME_MS = 30  # shortest frame the lights take (payload.MIN_DURATION_MS)
+SPARKLE_COLORS = ((255, 215, 60), (255, 110, 190), (120, 220, 255), (255, 255, 255))
+SPARKLE_LIFE_MS = 1000
+SPARKLE_SIZES = (-1, 0, 1, 2, 1, 0, -1, -1)  # over one life: off, dot, small, big, small, dot, off
+
+
+def _mix(a, b):
+    """A small deterministic hash of two ints (the same frames for the same message, so nothing re-uploads)."""
+    h = (a * 73856093) ^ (b * 19349663) ^ 0x5BD1E995
+    h = (h ^ (h >> 13)) * 0x5BD1E995 & 0xFFFFFFFF
+    return h ^ (h >> 15)
+
+
+def sparkle(d, x, y, size, c):
+    """A twinkle: a dot (size 0), a plus with a white centre (1), or a bigger plus (2)."""
+    if size <= 0:
+        px(d, x, y, dim(c, 0.7))
+        return
+    px(d, x, y, (255, 255, 255))
+    for r in range(1, size + 1):
+        for dx, dy in ((r, 0), (-r, 0), (0, r), (0, -r)):
+            px(d, x + dx, y + dy, c if r == 1 else dim(c, 0.5))
+
+
+def _sparkles(d, t_ms, bands, n=6, loop_ms=None):
+    """n sparkles twinkling at places that change every life, in the given row bands (y0, y1).
+    With loop_ms, the sparkles repeat after that long so the animation loops seamlessly."""
+    rows = [y for y0, y1 in bands for y in range(y0, y1 + 1)]
+    if not rows:
+        return
+    for k in range(n):
+        t = t_ms + k * SPARKLE_LIFE_MS // n
+        if loop_ms:
+            t %= loop_ms
+        life, into = divmod(t, SPARKLE_LIFE_MS)
+        size = SPARKLE_SIZES[into * len(SPARKLE_SIZES) // SPARKLE_LIFE_MS]
+        if size < 0:
+            continue
+        h = _mix(k, life)
+        sparkle(d, 1 + h % (W - 2), rows[(h >> 8) % len(rows)], size, SPARKLE_COLORS[(h >> 16) % len(SPARKLE_COLORS)])
+
+
 def scrolling_text(message: str, color=None, background=(0, 0, 0), large: bool = True,
-                   frame_ms: int = 70, max_frames: int = 100) -> Frames:
-    """Text centred if it fits, otherwise scrolled right-to-left. color=None means rainbow."""
+                   frame_ms: int = 50, max_frames: int = 100, color_effect: str | None = None,
+                   motion: str = "none", sparkles: bool = False) -> Frames:
+    """Text centred if it fits, otherwise scrolled right-to-left one pixel every frame_ms (in bigger steps
+    when that would take more than max_frames frames).
+
+    color_effect: "none" (color), "rainbow" (each letter a different colour, flowing along the message) or
+    "cycle" (the whole message changing colour); by default a rainbow without a color, else none.
+    motion: "bounce" hops the line up and down as it goes, "wave" ripples the letters.
+    sparkles: stars twinkle above and below the text."""
     scale = 2 if large else 1
     message = message.strip() or " "
     width = text_w(message, scale)
     y = (W - 5 * scale) // 2
-
-    def col(t):
-        return (lambda i: rainbow(t * 0.35 + i)) if color is None else tuple(color)
+    effect = color_effect or ("rainbow" if color is None else "none")
+    color = tuple(color) if color is not None else (255, 255, 255)
+    amp = 3 if large else 2
+    bands = [(1, y - amp - 2), (y + 5 * scale + amp + 1, W - 2)]
 
     if width <= W:
-        x = (W - width) // 2
-        n = 1 if color is not None else 16
-        frames = []
-        for t in range(n):
+        x0, step = (W - width) // 2, 0
+        if effect == "none" and motion == "none" and not sparkles:
             im, d = canvas(background)
-            text(d, message, x, y, col(t), scale=scale)
-            frames.append(im)
-        return frames, frame_ms if n > 1 else 1000
-    travel = width + W
-    step = max(1, math.ceil(travel / max_frames))
+            text(d, message, x0, y, color, scale=scale)
+            return [im], 1000
+        n = max(8, min(max_frames, round(TEXT_LOOP_MS / max(frame_ms, MIN_FRAME_MS))))
+        ms, loop_ms = TEXT_LOOP_MS / n, TEXT_LOOP_MS
+    else:
+        x0, travel = W, width + W
+        step = max(1, math.ceil(travel / max_frames), math.ceil(MIN_FRAME_MS / frame_ms))
+        n, ms, loop_ms = math.ceil(travel / step), step * frame_ms, None
+
     frames = []
-    for t in range(math.ceil(travel / step)):
+    for k in range(n):
+        t_ms = round(k * ms)
+        phase = 2 * math.pi * t_ms / TEXT_LOOP_MS
+        if effect == "rainbow":
+            col = (lambda i, p=phase: rainbow(p + i))
+        elif effect == "cycle":
+            col = rainbow(phase)
+        else:
+            col = color
+        if motion == "bounce":
+            dy = (lambda i, h=-round(amp * abs(math.sin(phase))): h)
+        elif motion == "wave":
+            dy = (lambda i, p=phase: round((amp - 1) * math.sin(2 * p - i * 0.9)))
+        else:
+            dy = None
         im, d = canvas(background)
-        text(d, message, W - t * step, y, col(t), scale=scale)
+        if sparkles:
+            _sparkles(d, t_ms, bands, loop_ms=loop_ms)
+        text(d, message, x0 - k * step, y, col, scale=scale, dy=dy)
         frames.append(im)
-    return frames, frame_ms * step
+    return frames, round(ms)
 
 
 def now_playing(cover: Image.Image | None, caption: str, color=(255, 255, 255),

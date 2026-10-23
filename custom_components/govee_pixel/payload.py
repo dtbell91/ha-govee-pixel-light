@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from PIL import Image, ImageChops, ImageSequence
 
 MAX_FRAMES = 100
+MAX_FRAMES_PIXELD = 600  # pixeld takes animations as GIFs of up to 600 frames
 MIN_DURATION_MS = 30
 MAX_DURATION_MS = 30000
 DEFAULT_DURATION_MS = 100
@@ -90,7 +91,7 @@ def frames_from_images(images: Iterable[tuple[Image.Image, int]], size: int = 32
     Consecutive identical frames are merged; animations longer than `max_frames` are
     evenly decimated with their time folded into the kept frames.
     """
-    max_frames = max(1, min(max_frames, MAX_FRAMES))
+    max_frames = max(1, max_frames)
     rs = RESAMPLE[resample]
     frames: list[Frame] = []
     for raw, d in images:

@@ -163,7 +163,9 @@ An animated weather icon with the temperature underneath, or a 3-day forecast, d
 ## Action: `govee_pixel.show_text`
 
 A message in a chunky 3×5 pixel font (letters are shown in capitals). Text that fits is centred;
-longer text scrolls. The light holds at most 100 frames, so long messages scroll in bigger steps.
+longer text scrolls, one pixel at a time. With pixeld an animation can have up to 600 frames, enough
+for about 70 large characters; Govee's own firmware holds 100, so long messages scroll in bigger steps
+there (at the same speed).
 
 | Field | |
 |---|---|
@@ -171,7 +173,13 @@ longer text scrolls. The light holds at most 100 frames, so long messages scroll
 | `color` | RGB; leave out for a rainbow |
 | `background` | RGB, default black |
 | `size` | `large` (about 4 characters at once) or `small` (about 8) |
-| `frame_duration` | ms per scroll step, default 70 |
+| `frame_duration` | ms for the text to move one pixel, default 50 (about 20 pixels a second); lower is faster |
+| `color_effect` | `none` (the `color`), `rainbow` (every letter a different colour, flowing along the message) or `cycle` (the whole message changing colour). Default: `rainbow` without a `color`, otherwise `none` |
+| `motion` | `none` (default), `bounce` (the text hops up and down as it goes) or `wave` (the letters ripple) |
+| `sparkles` | `true`: stars twinkle above and below the text |
+
+The effects work on centred text too (it then loops every 2 s). The same options work for `text`
+playlist items, e.g. `{message: "Well done!", color_effect: cycle, motion: bounce, sparkles: true}`.
 
 ## Action: `govee_pixel.show_animation`
 
@@ -187,14 +195,15 @@ All four actions return `{devices: {<name>: {confirmed, frames, bytes}}}` and ta
 
 Each light has one playlist of up to 20 items, kept by Home Assistant and played by the light
 itself. Items are any of the four content types above, with the same options as the matching
-`show_*` action, and a duration in seconds (the light rounds animations up to whole loops).
+`show_*` action, and a duration in seconds (rounded to whole loops of an animation, at least one).
 
 - `switch.<light>_playlist` starts / stops it (stopping clears the screen).
 - `sensor.<light>_playlist_status`: `stopped`, `rotating` (on the light), `rotating_ha` (from Home
   Assistant), `interrupted`, `paused` or `error`; attributes list the items, when an interruption
   ends, the last error, and the light's last reported on/off state and mode. (The light does the rotating, so HA does not know which item is on screen.)
 - `govee_pixel.playlist_add`: add an item, or replace the item with the same name (`name`,
-  `item_type`, `options`, `duration`, optional `position`, optional `show_if`).
+  `item_type`, `options`, `duration`, optional `position`, optional `show_if`). With pixeld the duration is
+  rounded to whole loops of an animation (at least one), so a scrolling message is never cut off part-way.
 - `govee_pixel.playlist_remove` (`name`), `govee_pixel.playlist_clear`,
   `govee_pixel.playlist_resume`, `govee_pixel.playlist_refresh` (redraw everything now).
 
@@ -234,6 +243,7 @@ python3 scripts/generate_gifs.py all          # every design + preview_sheet.png
 python3 scripts/generate_gifs.py weather rainy 17
 python3 scripts/generate_gifs.py forecast sunny:24:13 partlycloudy:21:12 rainy:16:9
 python3 scripts/generate_gifs.py text "Dinner time!" --color 255,200,0
+python3 scripts/generate_gifs.py text "Well done!" --color-effect cycle --motion bounce --sparkles
 python3 scripts/generate_gifs.py animation bedtime
 ```
 

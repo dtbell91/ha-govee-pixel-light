@@ -160,7 +160,7 @@ show_text:
             - large
             - small
     frame_duration:
-      default: 70
+      default: 50
       selector:
         number:
           min: 30
@@ -168,6 +168,27 @@ show_text:
           step: 10
           unit_of_measurement: ms
           mode: box
+    color_effect:
+      selector:
+        select:
+          translation_key: color_effect
+          options:
+            - none
+            - rainbow
+            - cycle
+    motion:
+      default: none
+      selector:
+        select:
+          translation_key: motion
+          options:
+            - none
+            - bounce
+            - wave
+    sparkles:
+      default: false
+      selector:
+        boolean:
 
 show_animation:
   fields:

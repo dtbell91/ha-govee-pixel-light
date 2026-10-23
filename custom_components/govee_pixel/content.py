@@ -25,9 +25,10 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from . import animations, payload
 from .const import (
-    ATTR_ANIMATION, ATTR_BACKGROUND, ATTR_COLOR, ATTR_CONDITION, ATTR_FIT, ATTR_FORECAST, ATTR_FRAME_DURATION,
-    ATTR_IMAGE_ENTITY, ATTR_IMAGE_PATH, ATTR_IMAGE_URL, ATTR_MAX_FRAMES, ATTR_MESSAGE, ATTR_RESAMPLE, ATTR_SIZE,
-    ATTR_TEMPERATURE, ATTR_TEMPERATURE_UNIT, ATTR_WEATHER_ENTITY, MAX_SOURCE_BYTES,
+    ATTR_ANIMATION, ATTR_BACKGROUND, ATTR_COLOR, ATTR_COLOR_EFFECT, ATTR_CONDITION, ATTR_FIT, ATTR_FORECAST,
+    ATTR_FRAME_DURATION, ATTR_IMAGE_ENTITY, ATTR_IMAGE_PATH, ATTR_IMAGE_URL, ATTR_MAX_FRAMES, ATTR_MESSAGE, ATTR_MOTION,
+    ATTR_RESAMPLE, ATTR_SIZE, ATTR_SPARKLES, ATTR_TEMPERATURE, ATTR_TEMPERATURE_UNIT, ATTR_WEATHER_ENTITY,
+    MAX_SOURCE_BYTES,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -80,8 +81,11 @@ TEXT_OPTIONS = {
     vol.Optional(ATTR_COLOR): RGB,
     vol.Optional(ATTR_BACKGROUND, default=[0, 0, 0]): RGB,
     vol.Optional(ATTR_SIZE, default="large"): vol.In(["large", "small"]),
-    vol.Optional(ATTR_FRAME_DURATION, default=70): vol.All(
+    vol.Optional(ATTR_FRAME_DURATION, default=50): vol.All(
         vol.Coerce(int), vol.Range(payload.MIN_DURATION_MS, 1000)),
+    vol.Optional(ATTR_COLOR_EFFECT): vol.In(animations.TEXT_COLOR_EFFECTS),
+    vol.Optional(ATTR_MOTION, default="none"): vol.In(animations.TEXT_MOTIONS),
+    vol.Optional(ATTR_SPARKLES, default=False): cv.boolean,
 }
 
 ANIMATION_OPTIONS = {
@@ -183,23 +187,23 @@ def options_schema(kind: str) -> vol.Schema:
     return vol.All(schema, CHECKS[kind]) if kind in CHECKS else schema
 
 
-Render = Callable[[int], list[payload.Frame]]
+Render = Callable[[int, int], list[payload.Frame]]
 
 
 @dataclass
 class Prepared:
-    render: Render  # matrix size -> frames (blocking, run in the executor)
+    render: Render  # (matrix size, most frames the light takes) -> frames (blocking, run in the executor)
     background: tuple[int, int, int]
     label: str
     source: bytes | None = None  # original file, for sending a GIF unchanged when possible
 
 
-def _generated(render: Callable[[], animations.Frames]) -> Render:
-    """Adapt a 32x32 animation renderer to the target matrix size."""
-    def run(size: int) -> list[payload.Frame]:
-        images, ms = render()
+def _generated(render: Callable[[int], animations.Frames]) -> Render:
+    """Adapt a 32x32 animation renderer (given the most frames the light takes) to the target matrix size."""
+    def run(size: int, max_frames: int) -> list[payload.Frame]:
+        images, ms = render(max_frames)
         return payload.frames_from_images(((im, ms) for im in images), size=size, fit=payload.FIT_STRETCH,
-                                          resample="nearest")
+                                          resample="nearest", max_frames=max_frames)
     return run
 
 
@@ -248,7 +252,7 @@ async def _prepare_image(hass: HomeAssistant, data: dict) -> Prepared:
     background = tuple(data[ATTR_BACKGROUND])
     label = data.get(ATTR_IMAGE_PATH) or data.get(ATTR_IMAGE_URL) or data.get(ATTR_IMAGE_ENTITY)
     untouched = ATTR_FRAME_DURATION not in data and data[ATTR_MAX_FRAMES] == payload.MAX_FRAMES
-    return Prepared(lambda size: payload.frames_from_image(
+    return Prepared(lambda size, _max_frames: payload.frames_from_image(
         source, size=size, fit=data[ATTR_FIT], resample=data[ATTR_RESAMPLE], background=background,
         duration=data.get(ATTR_FRAME_DURATION), max_frames=data[ATTR_MAX_FRAMES]), background, f"image {label}",
         source if untouched else None)
@@ -278,7 +282,7 @@ async def _prepare_weather(hass: HomeAssistant, data: dict) -> Prepared:
                 for f in (resp or {}).get(entity_id, {}).get("forecast", [])[:3] if f.get("temperature") is not None]
         if not days:
             raise HomeAssistantError(f"{entity_id} returned no daily forecast")
-        return Prepared(_generated(lambda: animations.forecast(days, unit)), (0, 0, 0), "forecast")
+        return Prepared(_generated(lambda _: animations.forecast(days, unit)), (0, 0, 0), "forecast")
 
     if not condition or condition in ("unavailable", "unknown") or temperature is None:
         raise HomeAssistantError(f"No current weather available ({entity_id or 'condition/temperature'})")
@@ -286,15 +290,16 @@ async def _prepare_weather(hass: HomeAssistant, data: dict) -> Prepared:
         temperature = float(temperature)
     except (TypeError, ValueError) as err:
         raise ServiceValidationError(f"Temperature {temperature!r} is not a number") from err
-    return Prepared(_generated(lambda: animations.weather(condition, temperature, unit)), (0, 0, 0),
+    return Prepared(_generated(lambda _: animations.weather(condition, temperature, unit)), (0, 0, 0),
                     f"weather {condition} {round(temperature)}")
 
 
 async def _prepare_text(hass: HomeAssistant, data: dict) -> Prepared:
     color = tuple(data[ATTR_COLOR]) if ATTR_COLOR in data else None
     background = tuple(data[ATTR_BACKGROUND])
-    return Prepared(_generated(lambda: animations.scrolling_text(
-        data[ATTR_MESSAGE], color, background, data[ATTR_SIZE] == "large", data[ATTR_FRAME_DURATION])),
+    return Prepared(_generated(lambda max_frames: animations.scrolling_text(
+        data[ATTR_MESSAGE], color, background, data[ATTR_SIZE] == "large", data[ATTR_FRAME_DURATION], max_frames,
+        data.get(ATTR_COLOR_EFFECT), data[ATTR_MOTION], data[ATTR_SPARKLES])),
         background, f"text {data[ATTR_MESSAGE]!r}")
 
 
@@ -329,8 +334,8 @@ async def _prepare_calendar(hass: HomeAssistant, data: dict) -> Prepared:
     if later := len(events) - len(same_day):
         summary = f"{summary} +{later}"
     color = tuple(data[ATTR_COLOR]) if data.get(ATTR_COLOR) else (255, 200, 60)
-    return Prepared(_generated(lambda: animations.reminder(start.day, when, time_label, summary, color,
-                                                                  data.get(ATTR_SIZE, "auto"))), (0, 0, 0),
+    return Prepared(_generated(lambda _: animations.reminder(start.day, when, time_label, summary, color,
+                                                                    data.get(ATTR_SIZE, "auto"))), (0, 0, 0),
                     f"calendar {events[0][2]}")
 
 
@@ -356,7 +361,7 @@ async def _prepare_now_playing(hass: HomeAssistant, data: dict) -> Prepared:
     caption = " - ".join(x for x in (title, artist) if x).upper()
     color = tuple(data[ATTR_COLOR]) if data.get(ATTR_COLOR) else (255, 255, 255)
 
-    def render(size: int) -> list[payload.Frame]:
+    def render(size: int, _max_frames: int) -> list[payload.Frame]:
         cover = None
         if art:
             try:
@@ -461,7 +466,7 @@ async def _prepare_clock(hass: HomeAssistant, data: dict) -> Prepared:
 
 async def _prepare_animation(hass: HomeAssistant, data: dict) -> Prepared:
     name = data[ATTR_ANIMATION]
-    return Prepared(_generated(lambda: animations.scene(name)), (0, 0, 0), f"animation {name}")
+    return Prepared(_generated(lambda _: animations.scene(name)), (0, 0, 0), f"animation {name}")
 
 
 PREPARE = {

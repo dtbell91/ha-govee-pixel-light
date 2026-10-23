@@ -249,6 +249,20 @@
         "small": "Small (5 px tall)"
       }
     },
+    "color_effect": {
+      "options": {
+        "none": "None",
+        "rainbow": "Rainbow (each letter)",
+        "cycle": "Cycle (whole message)"
+      }
+    },
+    "motion": {
+      "options": {
+        "none": "None",
+        "bounce": "Bounce",
+        "wave": "Wave"
+      }
+    },
     "animation": {
       "options": {
         "morning": "Morning",
@@ -412,7 +426,19 @@
         },
         "frame_duration": {
           "name": "Speed",
-          "description": "Milliseconds per scroll step (lower is faster)."
+          "description": "Milliseconds for the text to move one pixel (lower is faster). Default 50, about 20 pixels a second."
+        },
+        "color_effect": {
+          "name": "Colour effect",
+          "description": "None: the colour above. Rainbow: every letter a different colour, flowing along the message. Cycle: the whole message changing colour. Default: rainbow without a colour, otherwise none."
+        },
+        "motion": {
+          "name": "Motion",
+          "description": "Bounce: the text hops up and down as it goes. Wave: the letters ripple."
+        },
+        "sparkles": {
+          "name": "Sparkles",
+          "description": "Stars twinkle above and below the text."
         }
       }
     },

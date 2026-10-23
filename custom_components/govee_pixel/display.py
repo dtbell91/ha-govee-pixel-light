@@ -43,7 +43,7 @@ async def async_render(hass: HomeAssistant, entry: GoveePixelConfigEntry, dev: P
     encoder = entry.options.get(CONF_ENCODER, payload.ENCODER_FRAMES)
 
     def run():
-        frames = prepared.render(dev.width)
+        frames = prepared.render(dev.width, payload.MAX_FRAMES)
         return payload.encode_effect(frames, prepared.background, encoder, prepared.source), frames
 
     try:
@@ -55,7 +55,7 @@ async def async_render(hass: HomeAssistant, entry: GoveePixelConfigEntry, dev: P
 async def async_render_frames(hass: HomeAssistant, dev: PixelDevice, prepared: Prepared) -> list[payload.Frame]:
     """Run the renderer only (lights running pixeld take the frames as an image file)."""
     try:
-        return await hass.async_add_executor_job(prepared.render, dev.width)
+        return await hass.async_add_executor_job(prepared.render, dev.width, payload.MAX_FRAMES_PIXELD)
     except (OSError, ValueError) as err:
         raise ServiceValidationError(f"Cannot render {prepared.label}: {err}") from err
 

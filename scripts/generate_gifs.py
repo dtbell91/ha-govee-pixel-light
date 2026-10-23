@@ -10,6 +10,7 @@ show_animation actions.
   python3 scripts/generate_gifs.py weather sunny 81 --unit °F
   python3 scripts/generate_gifs.py forecast sunny:24:13 partlycloudy:21:12 rainy:16:9
   python3 scripts/generate_gifs.py text "Dinner time!" --color 255,200,0
+  python3 scripts/generate_gifs.py text "Well done!" --color-effect cycle --motion bounce --sparkles
   python3 scripts/generate_gifs.py animation bedtime
 
 Output goes to ./pixel_displays/ (change with -o).
@@ -98,6 +99,11 @@ def main():
     t.add_argument("message")
     t.add_argument("--color", type=rgb, help="R,G,B (default: rainbow)")
     t.add_argument("--small", action="store_true")
+    t.add_argument("--color-effect", choices=anim.TEXT_COLOR_EFFECTS)
+    t.add_argument("--motion", choices=anim.TEXT_MOTIONS, default="none")
+    t.add_argument("--sparkles", action="store_true")
+    t.add_argument("--frame-ms", type=int, default=50, help="ms per pixel of scrolling (default 50)")
+    t.add_argument("--max-frames", type=int, default=600, help="100 for Govee's own firmware, 600 for pixeld")
     a = sub.add_parser("animation")
     a.add_argument("name", choices=list(anim.SCENES))
     args = ap.parse_args()
@@ -115,7 +121,9 @@ def main():
             days.append((cond, float(hi), float(lo[0]) if lo else None))
         save_gif(anim.forecast(days, args.unit), args.out, "weather_3day_forecast.gif")
     elif args.cmd == "text":
-        save_gif(anim.scrolling_text(args.message, args.color, large=not args.small), args.out,
+        save_gif(anim.scrolling_text(args.message, args.color, large=not args.small, frame_ms=args.frame_ms,
+                                     max_frames=args.max_frames, color_effect=args.color_effect,
+                                     motion=args.motion, sparkles=args.sparkles), args.out,
                  f"text_{slug(args.message)[:40]}.gif")
     else:
         save_gif(anim.scene(args.name), args.out, f"{args.name}.gif")

@@ -192,7 +192,7 @@ class PlaylistController:
             self.status, self.last_error, self._ha_fallback = STATUS_STOPPED, None, False
             self.reapply_pending = False
             # Replace the rotation on the light with a blank screen.
-            blank = content.Prepared(lambda size: [payload.Frame(Image.new("RGB", (size, size)), 1000)],
+            blank = content.Prepared(lambda size, _max_frames: [payload.Frame(Image.new("RGB", (size, size)), 1000)],
                                      (0, 0, 0), "blank")
             effect, _ = await async_render(self.hass, self.entry, self.dev, blank)
             await async_push_effect(self.hass, self.entry, self.dev, effect)
@@ -440,6 +440,15 @@ class PlaylistController:
             self._rotation = None
 
 
+def _whole_loops(seconds: int, frames: list[payload.Frame] | None) -> float:
+    """An item's time on screen, rounded to whole loops of its animation (at least one) so it isn't cut off
+    part-way (pixeld moves on after exactly the duration it's given)."""
+    if not frames or len(frames) < 2:
+        return seconds
+    loop = sum(f.duration for f in frames) / 1000
+    return round(max(1, round(seconds / loop)) * loop, 3)
+
+
 class PixeldPlaylistController(PlaylistController):
     """Playlist for a light running pixeld: the light rotates the items itself and keeps its place when the
     list changes, so edits and live-item refreshes just publish the new item list (only new content is
@@ -543,8 +552,9 @@ class PixeldPlaylistController(PlaylistController):
                 raise HomeAssistantError(f"{self.dev.name}: {self.last_error}")
             self.item_keys = {item["name"]: key for item, key, _ in rendered if key}
             self.link.set_playlist_content(set(self.item_keys.values()))
-            items = [{"name": item["name"], "duration": item["duration"],
-                      **({"card": self._card(item)} if key is None else {"key": key})} for item, key, _ in rendered]
+            items = [{"name": item["name"], "duration": _whole_loops(item["duration"], frames),
+                      **({"card": self._card(item)} if key is None else {"key": key})}
+                     for item, key, frames in rendered]
             playlist_key = hashlib.sha256(json.dumps(items, sort_keys=True).encode()).hexdigest()
             changed = playlist_key != self.playlist_key
             self.playlist_key = playlist_key
