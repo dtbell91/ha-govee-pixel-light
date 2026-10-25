@@ -258,6 +258,11 @@ async def _prepare_image(hass: HomeAssistant, data: dict) -> Prepared:
         source if untouched else None)
 
 
+def _weather_frames(max_frames: int) -> int:
+    """Smooth weather for pixeld; fewer frames, so a smaller download, for Govee's own firmware."""
+    return animations.WEATHER_FRAMES if max_frames > payload.MAX_FRAMES else animations.WEATHER_FRAMES_STOCK
+
+
 async def _prepare_weather(hass: HomeAssistant, data: dict) -> Prepared:
     condition, temperature = data.get(ATTR_CONDITION), data.get(ATTR_TEMPERATURE)
     unit = data.get(ATTR_TEMPERATURE_UNIT)
@@ -282,7 +287,8 @@ async def _prepare_weather(hass: HomeAssistant, data: dict) -> Prepared:
                 for f in (resp or {}).get(entity_id, {}).get("forecast", [])[:3] if f.get("temperature") is not None]
         if not days:
             raise HomeAssistantError(f"{entity_id} returned no daily forecast")
-        return Prepared(_generated(lambda _: animations.forecast(days, unit)), (0, 0, 0), "forecast")
+        return Prepared(_generated(lambda max_frames: animations.forecast(days, unit, _weather_frames(max_frames))),
+                        (0, 0, 0), "forecast")
 
     if not condition or condition in ("unavailable", "unknown") or temperature is None:
         raise HomeAssistantError(f"No current weather available ({entity_id or 'condition/temperature'})")
@@ -290,7 +296,8 @@ async def _prepare_weather(hass: HomeAssistant, data: dict) -> Prepared:
         temperature = float(temperature)
     except (TypeError, ValueError) as err:
         raise ServiceValidationError(f"Temperature {temperature!r} is not a number") from err
-    return Prepared(_generated(lambda _: animations.weather(condition, temperature, unit)), (0, 0, 0),
+    return Prepared(_generated(lambda max_frames: animations.weather(condition, temperature, unit,
+                                                                     _weather_frames(max_frames))), (0, 0, 0),
                     f"weather {condition} {round(temperature)}")
 
 

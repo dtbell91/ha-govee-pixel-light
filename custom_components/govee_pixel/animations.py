@@ -147,11 +147,6 @@ def sun(d, cx, cy, r, phase=0, rays=8, ri=None, ro=None, col=(255, 205, 0), rcol
     disc(d, cx, cy, r, col)
 
 
-def moon(d, cx, cy, r, bg=(0, 0, 0)):
-    disc(d, cx, cy, r, (255, 225, 110))
-    disc(d, cx + r * 0.6, cy - r * 0.4, r * 0.85, bg)
-
-
 def twinkle(d, t, stars, col=(255, 245, 170)):
     for i, (x, y) in enumerate(stars):
         s = (t + i * 3) % 8
@@ -162,157 +157,445 @@ def twinkle(d, t, stars, col=(255, 245, 170)):
                 px(d, x + dx, y + dy, dim(col, 0.6))
 
 
-def raindrops(d, t, x0, x1, y0, y1, col=(70, 150, 255), n=5, speed=2):
-    span, h = x1 - x0, y1 - y0
+# ---------- weather icons ----------
+# Drawn per pixel with soft (anti-aliased) edges and sub-pixel motion. Every motion repeats a whole number of
+# times over the loop, so the GIF loops with no jump, drawn in however many frames. `pa` is an Image.load() pixel
+# access and `ph` the loop phase, 0 <= ph < 1.
+
+WEATHER_LOOP_MS = 3600
+WEATHER_FRAMES = 48  # 75 ms each: smooth, for pixeld
+WEATHER_FRAMES_STOCK = 32  # keeps Govee's own firmware's downloads to ~20-35 KB
+TAU = 2 * math.pi
+
+# (light side, shadow side) of each kind of cloud
+CLOUD_WHITE = ((255, 255, 255), (125, 145, 190))
+CLOUD_GREY = ((205, 212, 226), (85, 92, 118))
+CLOUD_FAR = ((140, 148, 168), (55, 60, 82))
+CLOUD_RAIN = ((175, 186, 210), (62, 72, 102))
+CLOUD_STORM = ((118, 112, 150), (32, 28, 52))
+CLOUD_SNOW = ((240, 244, 255), (130, 145, 180))
+CLOUD_FOG = ((150, 156, 172), (75, 80, 100))
+
+_LOBES = ((-1.0, 0.35, 0.62), (1.05, 0.4, 0.58), (-0.25, -0.22, 0.8), (0.62, -0.02, 0.66))  # (dx, dy, r) * u
+_BASE = (-1.05, 1.05, 0.45, 0.5)  # flat-bottomed capsule joining the lobes: x0, x1, y, r (* u)
+_LIGHT = (-0.48, -0.72, 0.5)  # from the upper left, towards the viewer
+
+
+def lerp(a, b, f):
+    return tuple(round(x + (y - x) * f) for x, y in zip(a, b))
+
+
+def _clamp(v, lo=0.0, hi=1.0):
+    return lo if v < lo else hi if v > hi else v
+
+
+def blend(pa, x, y, c, a=1.0):
+    """Mix colour c into pixel (x, y) with opacity a."""
+    if a <= 0.004 or not (0 <= x < W and 0 <= y < W):
+        return
+    if a >= 1:
+        pa[x, y] = tuple(c)
+        return
+    o = pa[x, y]
+    pa[x, y] = (round(o[0] + (c[0] - o[0]) * a), round(o[1] + (c[1] - o[1]) * a), round(o[2] + (c[2] - o[2]) * a))
+
+
+def glow(pa, x, y, c, a=1.0):
+    """Add light c * a to pixel (x, y)."""
+    if a <= 0.004 or not (0 <= x < W and 0 <= y < W):
+        return
+    o = pa[x, y]
+    pa[x, y] = tuple(min(255, round(o[i] + c[i] * a)) for i in range(3))
+
+
+def dot(pa, x, y, c, a=1.0, add=False, crisp=False):
+    """A one-pixel dot at a fractional position, shared between the four pixels around it (or, crisp, in the
+    nearest one: sharper for small slow things like snowflakes)."""
+    if crisp:
+        (glow if add else blend)(pa, round(x), round(y), c, a)
+        return
+    fx, fy = math.floor(x), math.floor(y)
+    ax, ay = x - fx, y - fy
+    put = glow if add else blend
+    for dx, wx in ((0, 1 - ax), (1, ax)):
+        for dy, wy in ((0, 1 - ay), (1, ay)):
+            put(pa, fx + dx, fy + dy, c, a * wx * wy)
+
+
+def puff(pa, cx, cy, u, pal=CLOUD_WHITE, flash=0.0, alpha=1.0):
+    """A shaded, soft-edged cumulus about 3.3u wide and 2u high centred on (cx, cy).
+    flash (0-1) lights it from inside, for lightning."""
+    light, shadow = pal
+    lobes = [(cx + dx * u, cy + dy * u, r * u) for dx, dy, r in _LOBES]
+    bx0, bx1, by, br = cx + _BASE[0] * u, cx + _BASE[1] * u, cy + _BASE[2] * u, _BASE[3] * u
+    bottom, top = cy + 0.85 * u, cy - 1.02 * u
+    for y in range(math.floor(top), math.ceil(bottom) + 1):
+        for x in range(math.floor(cx - 1.7 * u), math.ceil(cx + 1.7 * u) + 1):
+            sd, best, n = 9e9, -9e9, (0.0, 0.0, 1.0)
+            for lx, ly, r in lobes + [(_clamp(x, bx0, bx1), by, br)]:
+                dx, dy = x - lx, y - ly
+                d = math.hypot(dx, dy)
+                sd = min(sd, d - r)
+                if d < r + 0.7:
+                    q = min(d / r, 1.0)
+                    z = math.sqrt(1 - q * q) * r + ly * -0.05  # surface height; higher lobes sit a little behind
+                    if z > best:
+                        best = z
+                        n = (dx / max(d, r), dy / max(d, r), math.sqrt(1 - q * q))
+            sd = max(sd, y - bottom)
+            cov = _clamp(0.5 - sd)
+            if cov <= 0:
+                continue
+            lam = _clamp(n[0] * _LIGHT[0] + n[1] * _LIGHT[1] + n[2] * _LIGHT[2])
+            low = _clamp((y - top) / (bottom - top))
+            col = lerp(shadow, light, _clamp(0.15 + 0.95 * lam - 0.35 * low))
+            if flash:
+                col = lerp(col, (235, 230, 255), flash * (0.35 + 0.5 * low))
+            blend(pa, x, y, col, cov * alpha)
+
+
+def sun_glow(pa, cx, cy, r, ph, rays=8, ray_in=1.6, ray_out=(4.6, 3.2), halo=2.4):
+    """A gradient sun with a breathing halo and long and short rays turning two ray-spacings per loop."""
+    rot = 2 * TAU / rays * ph
+    pulse = 0.5 + 0.5 * math.sin(TAU * ph * 2)
+    reach = r + max(ray_out) + 1.5
+    for y in range(math.floor(cy - reach), math.ceil(cy + reach) + 1):
+        for x in range(math.floor(cx - reach), math.ceil(cx + reach) + 1):
+            dx, dy = x - cx, y - cy
+            d = math.hypot(dx, dy)
+            out = d - r
+            if out > 0:
+                glow(pa, x, y, (255, 110, 0), 0.32 * (0.75 + 0.25 * pulse) * math.exp(-out / halo))
+                a = (math.atan2(dy, dx) - rot) * rays / TAU
+                k = round(a)
+                across = abs(a - k) * TAU / rays * d  # distance from the ray's centre line, in pixels
+                length = r + ray_out[k % 2] + 0.5 * pulse
+                along = _clamp(out - ray_in + 0.5) * _clamp(length - d + 0.5)
+                ray = _clamp(1.0 - across / 0.75) * along * (1 - 0.45 * (d - r) / (length - r))
+                blend(pa, x, y, (255, 175, 30), ray)
+            cov = _clamp(r + 0.5 - d)
+            if cov:
+                f = _clamp(math.hypot(dx + r * 0.35, dy + r * 0.35) / (r * 1.25))
+                blend(pa, x, y, lerp((255, 250, 190), (255, 160, 10), f), cov)
+
+
+def moon_glow(pa, cx, cy, r, ph):
+    """A crescent with a soft glow."""
+    ox, oy, rc = cx + r * 0.62, cy - r * 0.42, r * 0.86
+    pulse = 0.5 + 0.5 * math.sin(TAU * ph)
+    for y in range(math.floor(cy - r - 3), math.ceil(cy + r + 3) + 1):
+        for x in range(math.floor(cx - r - 3), math.ceil(cx + r + 3) + 1):
+            d = math.hypot(x - cx, y - cy)
+            sd = max(d - r, rc - math.hypot(x - ox, y - oy))
+            if sd > 0:
+                glow(pa, x, y, (90, 80, 30), (0.22 + 0.08 * pulse) * math.exp(-sd / 1.6))
+                continue
+            cov = _clamp(0.5 - sd)
+            col = lerp((255, 245, 200), (225, 185, 90), _clamp((x - cx + r) / (2 * r) * 0.4 + (y - cy + r) / (2 * r) * 0.6))
+            blend(pa, x, y, col, cov)
+
+
+def stars(pa, ph, spots):
+    """spots: (x, y, twinkles per loop, phase offset). Each brightens and fades; at its peak it flares."""
+    for x, y, c, o in spots:
+        s = math.sin(TAU * (ph * c + o))
+        b = 0.25 + 0.75 * max(0.0, s) ** 2
+        blend(pa, x, y, (255, 245, 200), b)
+        if b > 0.85:
+            for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                blend(pa, x + dx, y + dy, (170, 180, 255), (b - 0.85) * 3)
+
+
+def shooting_star(pa, ph, start, end, at=0.15, length=0.18):
+    """Streaks from start to end over `length` of the loop, starting at `at`."""
+    s = (ph - at) / length
+    if not 0 <= s <= 1:
+        return
+    hx, hy = start[0] + (end[0] - start[0]) * s, start[1] + (end[1] - start[1]) * s
+    ux, uy = end[0] - start[0], end[1] - start[1]
+    n = math.hypot(ux, uy)
+    fade = math.sin(math.pi * s)
+    for k in range(9):
+        f = k / 2
+        dot(pa, hx - ux / n * f, hy - uy / n * f, (255, 255, 230) if k < 2 else (150, 170, 255),
+            fade * (1 - k / 9), add=True)
+
+
+def rain(pa, ph, x0, x1, y0, y1, n=6, speeds=(5, 6, 7), length=3.0, slant=0.3, splash=True, seed=1,
+         head=(200, 232, 255), tail=(40, 110, 240)):
+    """Slanted streaks falling from y0 to y1 (start them inside the cloud, drawn afterwards, to hide where they
+    appear). Faster drops are nearer and brighter; each lands with a little splash."""
+    fall = y1 - y0 + length
     for i in range(n):
-        x = x0 + (i * span) // max(1, n - 1)
-        y = y0 + ((t * speed + i * 3) % (h + 1))
-        px(d, x, y, col)
-        px(d, x, y + 1, dim(col, 0.6))
+        h = _mix(seed, i)
+        c = speeds[(h >> 8) % len(speeds)]
+        near = (c - min(speeds)) / max(1, max(speeds) - min(speeds))
+        bright = 0.7 + 0.3 * near
+        x = x0 + (i + 0.5) * (x1 - x0) / n + ((h & 0xFF) / 255 - 0.5) * 1.5
+        y = y0 + ((ph * c + ((h >> 16) & 0xFF) / 256) % 1) * fall
+        for row in range(math.floor(y - length), math.ceil(y) + 1):
+            if row > y1:
+                continue
+            cov = _clamp(min(row + 0.5, y) - max(row - 0.5, y - length))
+            g = _clamp(1 - (y - row) / (length + 0.5))
+            blend(pa, round(x + slant * (row - y0)), row, lerp(tail, head, g), cov * (0.45 + 0.55 * g) * bright)
+        if splash and y > y1:
+            s = (y - y1) / length
+            sx = x + slant * (y1 - y0)
+            for side in (-1, 1):
+                dot(pa, sx + side * (1 + 1.5 * s), y1 - 1.5 * math.sin(math.pi * s), head, (1 - s) * bright, crisp=True)
 
 
-def flakes(d, t, x0, x1, y0, y1, n=6, col=(240, 245, 255), speed=1):
-    span, h = x1 - x0, y1 - y0
+def snow(pa, ph, x0, x1, y0, y1, n=6, speeds=(1, 2), seed=2, col=(245, 248, 255)):
+    """Flakes drifting down and swaying; the nearer, faster ones are bigger."""
+    fall = y1 - y0 + 2
     for i in range(n):
-        x = x0 + (i * span) // max(1, n - 1) + round(math.sin((t + i * 2) / 2))
-        y = y0 + ((t * speed + i * 3) % (h + 1))
-        px(d, x, y, col)
+        h = _mix(seed, i)
+        c = speeds[(h >> 8) % len(speeds)]
+        x = x0 + (i + 0.5) * (x1 - x0) / n + ((h & 0xFF) / 255 - 0.5)
+        x += 1.1 * math.sin(TAU * (ph * (c + 1) + ((h >> 4) & 0xFF) / 256))
+        y = y0 - 1 + ((ph * c + ((h >> 16) & 0xFF) / 256) % 1) * fall
+        a = _clamp(y1 + 1 - y)
+        big = c == max(speeds)
+        dot(pa, x, y, col, a, crisp=True)
+        if big:
+            for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                dot(pa, x + dx, y + dy, (150, 185, 255), 0.5 * a, crisp=True)
 
 
-def bolt(d, cx, cy):
-    d.polygon([(cx + 1, cy), (cx - 3, cy + 5), (cx, cy + 5), (cx - 2, cy + 9), (cx + 3, cy + 3),
-               (cx, cy + 3)], fill=(255, 235, 60))
+def hail(pa, ph, x0, x1, y0, y1, n=5, speeds=(6, 7), seed=3):
+    """Icy pellets that fall fast and bounce off the ground."""
+    drop = 0.7  # share of each cycle spent falling; the rest bouncing
+    for i in range(n):
+        h = _mix(seed, i)
+        c = speeds[(h >> 8) % len(speeds)]
+        x = x0 + (i + 0.5) * (x1 - x0) / n + ((h & 0xFF) / 255 - 0.5)
+        p = (ph * c + ((h >> 16) & 0xFF) / 256) % 1
+        if p < drop:
+            y = y0 + (p / drop) ** 1.3 * (y1 - y0)
+            dot(pa, x, y - 1, (90, 140, 220), 0.5, crisp=True)
+            a = 1.0
+        else:
+            s = (p - drop) / (1 - drop)
+            x += (1 if i % 2 else -1) * 2 * s
+            y = y1 - 3 * math.sin(math.pi * s) * (1 - 0.3 * s)
+            a = 1 - s * s
+        dot(pa, x, y, (235, 248, 255), a, crisp=True)
+        dot(pa, x + 1, y, (150, 190, 240), 0.7 * a, crisp=True)
+        dot(pa, x, y + 1, (150, 190, 240), 0.7 * a, crisp=True)
+        dot(pa, x + 1, y + 1, (90, 130, 200), 0.6 * a, crisp=True)
 
 
-def wind(d, t, x0, x1, ys, col=(190, 220, 240)):
-    span = x1 - x0
-    for i, y in enumerate(ys):
-        length = 6 + (i % 2) * 3
-        x = x0 + (t * 2 + i * 7) % (span + length) - length
-        for k in range(length):
-            if x0 <= x + k <= x1:
-                px(d, x + k, y, dim(col, 0.4 + 0.6 * k / length))
+def bolt(pa, pts, a):
+    """A forked lightning bolt along the points: a white core with a violet glow."""
+    for (xa, ya), (xb, yb) in zip(pts, pts[1:]):
+        steps = max(1, round(math.hypot(xb - xa, yb - ya) * 3))
+        for k in range(steps + 1):
+            x, y = xa + (xb - xa) * k / steps, ya + (yb - ya) * k / steps
+            for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                glow(pa, round(x + dx), round(y + dy), (60, 45, 120), a * 0.5)
+            blend(pa, round(x), round(y), (255, 250, 210), a)
 
 
-def fog(d, t, x0, x1, ys, col=(170, 175, 190)):
-    for i, y in enumerate(ys):
-        off = round(math.sin((t + i * 3) / 8 * 2 * math.pi) * 2)
-        rect(d, x0 + off + (i % 2) * 2, y, x1 + off - (i % 2) * 2, y, col)
+def gusts(pa, ph, rows, x0=0, x1=W - 1, col=(200, 230, 255)):
+    """Wavy streaks of wind blowing right, hooking up at the front. rows: (y, length, laps per loop, offset)."""
+    period = x1 - x0 + 16
+    for y0, length, laps, o in rows:
+        hx = x0 - 4 + ((ph * laps + o) % 1) * period
+        wave = lambda x, y0=y0, laps=laps: y0 + 0.5 * math.sin(TAU * (x / 16 - ph * laps))
+        edge = lambda x: _clamp((x - x0 + 1) / 3) * _clamp((x1 + 1 - x) / 3)
+        for x in range(math.floor(hx - length), math.ceil(hx) + 1):
+            f = hx - x
+            a = _clamp(1 - f / length) * _clamp(1 - (x - hx)) * edge(x)
+            y = wave(x)
+            fy = math.floor(y)
+            blend(pa, x, fy, col, a * (1 - (y - fy)))
+            blend(pa, x, fy + 1, col, a * (y - fy))
+        y = wave(hx)
+        for dx, dy, a in ((1, -1, 0.85), (1.5, -2, 0.7), (1, -3, 0.5), (0, -3, 0.3)):  # the curl
+            dot(pa, hx + dx, y + dy, col, a * edge(hx + dx))
 
 
-def warning(d, cx, cy, t):
-    col = (255, 200, 40) if t % 4 < 2 else (255, 120, 40)
-    d.polygon([(cx, cy - 6), (cx - 7, cy + 6), (cx + 7, cy + 6)], outline=col)
-    rect(d, cx, cy - 2, cx, cy + 2, col)
-    px(d, cx, cy + 4, col)
+def leaf(pa, ph, x0, x1, y):
+    """An autumn leaf tumbling across once per loop."""
+    x = x0 - 3 + ph * (x1 - x0 + 6)
+    yy = y + 3 * math.sin(TAU * ph * 2)
+    ang = TAU * ph * 3
+    for k, col in ((-1, (240, 160, 40)), (0, (220, 110, 30)), (1, (170, 70, 20))):
+        dot(pa, x + math.cos(ang) * k * 0.9, yy + math.sin(ang) * k * 0.9, col)
+
+
+def fog_bands(pa, ph, x0, x1, rows, col=(190, 195, 210)):
+    """Wisps of mist drifting in alternate directions, with gaps that move along them. rows: (y, thickness)."""
+    for i, (yc, th) in enumerate(rows):
+        shift = (1 if i % 2 else -1) * 16 * ph
+        o = i * 1.7
+        for y in range(math.floor(yc - th - 1), math.ceil(yc + th + 1) + 1):
+            v = math.exp(-((y - yc) / th) ** 2)
+            for x in range(x0, x1 + 1):
+                u = (x + shift) / 16
+                tex = _clamp(0.45 + 0.55 * math.sin(TAU * u + o) + 0.3 * math.sin(TAU * 2 * u + 2 * o))
+                edge = _clamp((x - x0 + 1) / 4) * _clamp((x1 + 1 - x) / 4)
+                blend(pa, x, y, col, v * tex * edge * (0.55 + 0.1 * i))
+
+
+def warning(pa, d, cx, ph):
+    """A pulsing warning sign."""
+    pulse = 0.5 + 0.5 * math.sin(TAU * ph * 2)
+    col = lerp((255, 140, 20), (255, 215, 60), pulse)
+    d.polygon([(cx - 1, 0), (cx + 1, 0), (cx + 10, 18), (cx - 10, 18)], outline=dim(col, 0.2 + 0.25 * pulse))
+    d.polygon([(cx - 1, 2), (cx, 2), (cx + 8, 17), (cx - 9, 17)], fill=col)
+    rect(d, cx - 1, 7, cx, 12, (40, 10, 0))
+    rect(d, cx - 1, 14, cx, 15, (40, 10, 0))
+
+
+# lightning: 48ths of the loop -> flash strength
+_FLASHES = {30: 1.0, 31: 0.7, 32: 0.2, 34: 0.9, 35: 0.45, 36: 0.15}
+
+
+def _flash(ph):
+    return _FLASHES.get(int(ph * 48 + 1e-6), 0.0)
+_BOLT = [(17, 9), (14.5, 12.5), (17.5, 13.5), (14, 18), (15, 19)]
 
 
 def draw_temp(d, t, y=21, unit="°C"):
+    """The temperature, light at the top of the digits shading darker to the bottom."""
     s = str(t)
     col = temp_col(t, unit)
-    tw = text_w(s, 2) + 1 + 3
-    x = (W - tw) // 2
-    x = text(d, s, x, y, col, scale=2)
+    x = (W - (text_w(s, 2) + 1 + 3)) // 2
+    for row in range(5):
+        c = lerp(lerp(col, (255, 255, 255), 0.3), dim(col, 0.8), row / 4)
+        for i, ch in enumerate(s):
+            for k, b in enumerate(_glyph(ch)):
+                if b == "1" and k // 3 == row:
+                    gx = x + i * 8 + (k % 3) * 2
+                    rect(d, gx, y + row * 2, gx + 1, y + row * 2 + 1, c)
+    x += len(s) * 8
     for dx, dy in ((1, 0), (0, 1), (2, 1), (1, 2)):
         px(d, x + dx, y + dy, col)
 
 
-def weather_frame(cond, temp, t, unit="°C"):
-    im, d = canvas()
-    cx, cy = 16, 9
+def weather_icon(pa, d, cond, ph):
+    """The 32x20 icon area of the weather display."""
+    s = math.sin(TAU * ph)
     if cond == "sunny":
-        sun(d, cx, cy + 1, 4, phase=t)
+        sun_glow(pa, 16, 9.5, 4.5, ph)
     elif cond == "night":
-        moon(d, 16, 9, 5)
-        twinkle(d, t, [(5, 3), (26, 4), (28, 13), (4, 14), (9, 8)])
+        stars(pa, ph, [(4, 3, 1, 0.0), (26, 3, 2, 0.3), (29, 12, 1, 0.6), (3, 14, 2, 0.8), (8, 8, 1, 0.45),
+                       (23, 16, 1, 0.15)])
+        shooting_star(pa, ph, (27, 1), (19, 6), at=0.55)
+        moon_glow(pa, 15, 10, 6, ph)
     elif cond == "partly":
-        sun(d, 11, 8, 3, phase=t, ri=5, ro=7)
-        cloud(d, 18, 11, 5)
+        sun_glow(pa, 11, 7.5, 3.6, ph, ray_out=(3.6, 2.6), halo=2.0)
+        puff(pa, 19.5 + 1.2 * s, 12.5, 4.6, CLOUD_WHITE)
     elif cond == "cloudy":
-        off = round(math.sin(t / 8 * 2 * math.pi) * 1.5)
-        cloud(d, 12 - off, 7, 4, c=(150, 160, 180), sh=(100, 108, 130))
-        cloud(d, 18 + off, 11, 5)
+        puff(pa, 25 - 1.0 * math.cos(TAU * ph), 4.5, 2.4, CLOUD_FAR)
+        puff(pa, 11 + 1.5 * s, 7.5, 3.8, CLOUD_GREY)
+        puff(pa, 19 - 1.2 * s, 12, 4.8, CLOUD_WHITE)
     elif cond == "fog":
-        cloud(d, 16, 5, 4, c=(150, 160, 180), sh=(100, 108, 130))
-        fog(d, t, 5, 26, (12, 14, 16, 18))
+        puff(pa, 16 + 0.8 * s, 6, 4.2, CLOUD_FOG)
+        fog_bands(pa, ph, 2, 29, [(11, 0.8), (13.5, 0.8), (16, 0.8), (18.5, 0.8)])
     elif cond in ("rain", "pouring"):
-        cloud(d, 16, 6, 5, c=(170, 180, 200), sh=(110, 120, 145))
-        raindrops(d, t, 7, 25, 13, 18, n=8 if cond == "pouring" else 5)
+        heavy = cond == "pouring"
+        rain(pa, ph, 8 if heavy else 9, 21, 9, 19, n=10 if heavy else 6, speeds=(7, 8, 9) if heavy else (5, 6, 7),
+             length=4.0 if heavy else 3.0, slant=0.4 if heavy else 0.25)
+        puff(pa, 16 + 0.7 * s, 6.5, 5, CLOUD_STORM if heavy else CLOUD_RAIN)
     elif cond == "storm":
-        cloud(d, 16, 5, 5, c=(110, 115, 140), sh=(70, 75, 100))
-        if t % 4 in (0, 1):
-            bolt(d, 17, 9)
-        raindrops(d, t, 8, 24, 13, 18, n=4)
+        f = _flash(ph)
+        if f:
+            for y in range(20):
+                for x in range(W):
+                    blend(pa, x, y, (45, 40, 90), f * 0.45 * (1 - y / 24))
+        rain(pa, ph, 9, 21, 9, 19, n=6, speeds=(6, 7, 8), length=3.0, slant=0.35, seed=4)
+        if f > 0.3:
+            bolt(pa, _BOLT, f)
+        puff(pa, 16 + 0.6 * s, 6, 5.2, CLOUD_STORM, flash=f)
     elif cond == "snow":
-        cloud(d, 16, 6, 5, c=(190, 200, 220), sh=(130, 140, 165))
-        flakes(d, t, 8, 24, 13, 19)
+        snow(pa, ph, 9, 23, 10, 19, n=7)
+        puff(pa, 16 + 0.7 * s, 6.5, 5, CLOUD_SNOW)
     elif cond == "sleet":
-        cloud(d, 16, 6, 5, c=(170, 180, 200), sh=(110, 120, 145))
-        raindrops(d, t, 8, 24, 13, 18, n=3)
-        flakes(d, t, 10, 22, 13, 19, n=3)
+        rain(pa, ph, 9, 21, 9, 19, n=4, seed=5)
+        snow(pa, ph, 10, 22, 10, 19, n=4, seed=6)
+        puff(pa, 16 + 0.7 * s, 6.5, 5, CLOUD_RAIN)
     elif cond == "hail":
-        cloud(d, 16, 6, 5, c=(150, 160, 180), sh=(100, 108, 130))
-        flakes(d, t, 8, 24, 13, 19, n=5, col=(220, 235, 255), speed=2)
+        hail(pa, ph, 9, 23, 10, 19)
+        puff(pa, 16 + 0.7 * s, 6.5, 5, CLOUD_GREY)
     elif cond == "windy":
-        wind(d, t, 3, 28, (4, 8, 12, 16))
+        gusts(pa, ph, [(4, 9, 1, 0.0), (9, 12, 2, 0.4), (14, 8, 1, 0.55), (18, 10, 2, 0.9)])
+        leaf(pa, ph, 0, W - 1, 11)
     else:
-        warning(d, 16, 9, t)
+        warning(pa, d, 16, ph)
+
+
+def weather_frame(cond, temp, ph, unit="°C"):
+    im, d = canvas()
+    weather_icon(im.load(), d, cond, ph)
     draw_temp(d, temp, unit=unit)
     return im
 
 
-def mini_icon(d, cond, cx, cy, t):
+def mini_icon(pa, d, cond, cx, cy, ph):
+    """A ~10x10 icon for the forecast."""
+    s = math.sin(TAU * ph)
     if cond == "sunny":
-        sun(d, cx, cy, 2, phase=t, ri=3, ro=4)
+        sun_glow(pa, cx, cy, 2.2, ph, ray_in=1.2, ray_out=(2.6, 1.8), halo=1.4)
     elif cond == "night":
-        moon(d, cx, cy, 3)
+        moon_glow(pa, cx, cy, 3.2, ph)
     elif cond == "partly":
-        sun(d, cx - 2, cy - 1, 2, phase=t, ri=3, ro=4)
-        cloud(d, cx + 1, cy + 1, 2.4)
-    elif cond in ("rain", "pouring", "sleet"):
-        cloud(d, cx - 1, cy - 2, 2.1, c=(170, 180, 200), sh=(110, 120, 145))
-        for i, dx in enumerate((-3, 0, 3)):
-            col = (240, 245, 255) if cond == "sleet" and i == 1 else (70, 150, 255)
-            px(d, cx + dx, cy + 2 + ((t + i * 2) % 4), col)
-    elif cond == "storm":
-        cloud(d, cx, cy - 2, 2.6, c=(110, 115, 140), sh=(70, 75, 100))
-        if t % 4 in (0, 1):
-            bolt(d, cx + 1, cy + 1)
-    elif cond in ("snow", "hail"):
-        cloud(d, cx - 1, cy - 2, 2.1, c=(190, 200, 220), sh=(130, 140, 165))
-        for i, dx in enumerate((-3, 0, 3)):
-            px(d, cx + dx, cy + 2 + ((t + i * 2) % 4), (240, 245, 255))
+        sun_glow(pa, cx - 1.8, cy - 1.5, 1.8, ph, ray_in=1.0, ray_out=(2.2, 1.5), halo=1.2)
+        puff(pa, cx + 1 + 0.4 * s, cy + 1.5, 2.2)
+    elif cond in ("rain", "pouring", "sleet", "storm"):
+        f = _flash(ph) if cond == "storm" else 0.0
+        rain(pa, ph, cx - 3.5, cx + 3.5, cy - 1, cy + 5, n=4 if cond == "pouring" else 3, length=2.0,
+             slant=0.2, splash=False, seed=7)
+        if cond == "sleet":
+            snow(pa, ph, cx - 2, cx + 2, cy, cy + 5, n=2, seed=8)
+        if f > 0.3:
+            bolt(pa, [(cx + 0.5, cy), (cx - 1, cy + 2), (cx + 1, cy + 3), (cx - 0.5, cy + 5)], f)
+        puff(pa, cx, cy - 1.5, 2.3, CLOUD_STORM if cond in ("storm", "pouring") else CLOUD_RAIN, flash=f)
+    elif cond == "snow":
+        snow(pa, ph, cx - 3.5, cx + 3.5, cy, cy + 5, n=3, speeds=(1,), seed=9)
+        puff(pa, cx, cy - 1.5, 2.3, CLOUD_SNOW)
+    elif cond == "hail":
+        hail(pa, ph, cx - 3.5, cx + 3.5, cy, cy + 5, n=3)
+        puff(pa, cx, cy - 1.5, 2.3, CLOUD_GREY)
     elif cond == "fog":
-        fog(d, t, cx - 4, cx + 4, (cy - 2, cy, cy + 2))
+        fog_bands(pa, ph, cx - 4, cx + 4, [(cy - 2, 0.8), (cy + 0.5, 0.8), (cy + 3, 0.8)])
     elif cond == "windy":
-        wind(d, t, cx - 5, cx + 5, (cy - 2, cy + 1, cy + 3))
+        gusts(pa, ph, [(cy - 2, 5, 1, 0.0), (cy + 1, 6, 2, 0.5), (cy + 4, 4, 1, 0.3)], cx - 4, cx + 4)
     elif cond == "exceptional":
-        col = (255, 200, 40) if t % 4 < 2 else (255, 120, 40)
+        col = lerp((255, 140, 20), (255, 215, 60), 0.5 + 0.5 * math.sin(TAU * ph * 2))
         rect(d, cx, cy - 3, cx, cy + 1, col)
         px(d, cx, cy + 3, col)
     else:
-        cloud(d, cx, cy, 2.8)
+        puff(pa, cx, cy, 2.6, CLOUD_GREY)
 
 
-def weather(condition: str, temperature: float, unit: str = "°C") -> Frames:
-    """Animated icon for the condition with the temperature underneath (8 frames)."""
+def weather(condition: str, temperature: float, unit: str = "°C", frames: int = WEATHER_FRAMES) -> Frames:
+    """Animated icon for the condition with the temperature underneath, looping seamlessly."""
     cond = normalise_condition(condition)
     temp = round(temperature)
-    return [weather_frame(cond, temp, t, unit) for t in range(8)], 130
+    return [weather_frame(cond, temp, t / frames, unit) for t in range(frames)], round(WEATHER_LOOP_MS / frames)
 
 
-def forecast(days: list[tuple[str, float, float | None]], unit: str = "°C") -> Frames:
+def forecast(days: list[tuple[str, float, float | None]], unit: str = "°C", frames: int = WEATHER_FRAMES) -> Frames:
     """Up to three days side by side: icon, high, low. `days` = [(condition, high, low), ...]."""
     days = days[:3]
-    frames = []
-    for t in range(8):
+    n, frames = frames, []
+    for t in range(n):
         im, d = canvas()
+        pa = im.load()
+        for i, (cond, hi, lo) in enumerate(days):
+            cx = 5 + i * 11
+            mini_icon(pa, d, normalise_condition(cond), cx, 7, t / n)
+        # dividers drawn after the icons so a wide icon doesn't run into its neighbour
         for x in (10, 21):
+            for y in range(31):
+                pa[x, y] = (0, 0, 0)
             for y in range(2, 30):
                 px(d, x, y, (35, 35, 50))
         for i, (cond, hi, lo) in enumerate(days):
             cx = 5 + i * 11
-            mini_icon(d, normalise_condition(cond), cx, 7, t)
             hs = str(round(hi))
             text(d, hs, cx - text_w(hs) // 2, 16, temp_col(round(hi), unit))
             if lo is not None:
@@ -320,7 +603,7 @@ def forecast(days: list[tuple[str, float, float | None]], unit: str = "°C") -> 
                 text(d, ls, cx - text_w(ls) // 2, 23, dim((120, 170, 255), 0.9))
         rect(d, 1, 31, 9, 31, (255, 255, 255))  # "today" marker
         frames.append(im)
-    return frames, 140
+    return frames, round(WEATHER_LOOP_MS / n)
 
 
 # ---------- text ----------
