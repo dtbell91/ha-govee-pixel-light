@@ -8,6 +8,7 @@ show_animation actions.
   python3 scripts/generate_gifs.py all                     # every design + preview_sheet.png
   python3 scripts/generate_gifs.py weather rainy 17
   python3 scripts/generate_gifs.py weather sunny 81 --unit °F
+  python3 scripts/generate_gifs.py weather rainy 17 --frames 32   # smaller, for Govee's own firmware
   python3 scripts/generate_gifs.py forecast sunny:24:13 partlycloudy:21:12 rainy:16:9
   python3 scripts/generate_gifs.py text "Dinner time!" --color 255,200,0
   python3 scripts/generate_gifs.py text "Well done!" --color-effect cycle --motion bounce --sparkles
@@ -92,9 +93,12 @@ def main():
     w.add_argument("condition", help="HA condition (sunny, rainy, ...) or icon name")
     w.add_argument("temperature", type=float)
     w.add_argument("--unit", default="°C", choices=["°C", "°F"])
+    w.add_argument("--frames", type=int, default=anim.WEATHER_FRAMES,
+                   help=f"frames in the loop (default {anim.WEATHER_FRAMES}; {anim.WEATHER_FRAMES_STOCK} is what Govee's own firmware gets)")
     f = sub.add_parser("forecast")
     f.add_argument("days", nargs="+", help="condition:high:low, up to three")
     f.add_argument("--unit", default="°C", choices=["°C", "°F"])
+    f.add_argument("--frames", type=int, default=anim.WEATHER_FRAMES)
     t = sub.add_parser("text")
     t.add_argument("message")
     t.add_argument("--color", type=rgb, help="R,G,B (default: rainbow)")
@@ -112,14 +116,14 @@ def main():
         build_all(args.out)
     elif args.cmd == "weather":
         temp = round(args.temperature)
-        save_gif(anim.weather(args.condition, temp, args.unit), args.out,
+        save_gif(anim.weather(args.condition, temp, args.unit, args.frames), args.out,
                  f"weather_{slug(args.condition)}_{temp}.gif")
     elif args.cmd == "forecast":
         days = []
         for spec in args.days[:3]:
             cond, hi, *lo = spec.split(":")
             days.append((cond, float(hi), float(lo[0]) if lo else None))
-        save_gif(anim.forecast(days, args.unit), args.out, "weather_3day_forecast.gif")
+        save_gif(anim.forecast(days, args.unit, args.frames), args.out, "weather_3day_forecast.gif")
     elif args.cmd == "text":
         save_gif(anim.scrolling_text(args.message, args.color, large=not args.small, frame_ms=args.frame_ms,
                                      max_frames=args.max_frames, color_effect=args.color_effect,
