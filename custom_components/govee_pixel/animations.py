@@ -459,6 +459,21 @@ def _flash(ph):
 _BOLT = [(17, 9), (14.5, 12.5), (17.5, 13.5), (14, 18), (15, 19)]
 
 
+def _backing(pa, mask, y0, y1, band=None):
+    """Darken round the lit pixels of mask (rows y0-y1) so text stays readable over weather; band (y0, y1) also
+    dims those rows."""
+    ma = mask.load()
+    edge = mask.filter(ImageFilter.MaxFilter(3)).load()
+    for y in range(max(0, y0), min(W - 1, y1) + 1):
+        for x in range(W):
+            if ma[x, y]:
+                continue
+            if edge[x, y]:
+                blend(pa, x, y, (0, 0, 0), 0.9)
+            elif band:
+                blend(pa, x, y, (0, 0, 0), 0.45 if band[0] <= y <= band[1] else 0.2)
+
+
 def draw_temp(d, t, y=21, unit="°C", backing=None, pa=None):
     """The temperature, light at the top of the digits shading darker to the bottom.
     backing, for weather drawn behind the digits: "outline" (a dark edge round them) or "plate" (also dims the
@@ -477,16 +492,7 @@ def draw_temp(d, t, y=21, unit="°C", backing=None, pa=None):
     for dx, dy in ((1, 0), (0, 1), (2, 1), (1, 2)):
         md.point((deg + dx, y + dy), fill=255)
     if backing:
-        ma = mask.load()
-        edge = mask.filter(ImageFilter.MaxFilter(3)).load()
-        for yy in range(y - 2, y + 12):
-            for xx in range(W):
-                if not 0 <= yy < W or ma[xx, yy]:
-                    continue
-                if edge[xx, yy]:
-                    blend(pa, xx, yy, (0, 0, 0), 0.9)
-                elif backing == "plate":
-                    blend(pa, xx, yy, (0, 0, 0), 0.45 if y - 1 <= yy <= y + 10 else 0.2)
+        _backing(pa, mask, y - 2, y + 11, backing == "plate" and (y - 1, y + 10))
     for row in range(5):
         c = lerp(lerp(col, (255, 255, 255), 0.3), dim(col, 0.8), row / 4)
         for i, ch in enumerate(s):
@@ -584,35 +590,46 @@ def weather_frame(cond, temp, ph, unit="°C", full=False, backing="outline"):
     return im
 
 
-def mini_icon(pa, d, cond, cx, cy, ph):
-    """A ~10x10 icon for the forecast."""
+def mini_icon(pa, d, cond, cx, cy, ph, full=False):
+    """A ~10x10 icon for the forecast; with full, its weather carries on down the column."""
     s = math.sin(TAU * ph)
+    g = W - 2 if full else cy + 5
     if cond == "sunny":
         sun_glow(pa, cx, cy, 2.2, ph, ray_in=1.2, ray_out=(2.6, 1.8), halo=1.4)
     elif cond == "night":
+        if full:
+            stars(pa, ph, [(cx - 4, cy + 7, 1, 0.2), (cx + 4, cy + 13, 2, 0.6), (cx - 3, cy + 21, 1, 0.85),
+                           (cx + 3, cy + 23, 1, 0.4)])
         moon_glow(pa, cx, cy, 3.2, ph)
     elif cond == "partly":
         sun_glow(pa, cx - 1.8, cy - 1.5, 1.8, ph, ray_in=1.0, ray_out=(2.2, 1.5), halo=1.2)
         puff(pa, cx + 1 + 0.4 * s, cy + 1.5, 2.2)
     elif cond in ("rain", "pouring", "sleet", "storm"):
         f = _flash(ph) if cond == "storm" else 0.0
-        rain(pa, ph, cx - 3.5, cx + 3.5, cy - 1, cy + 5, n=4 if cond == "pouring" else 3, length=2.0,
-             slant=0.2, splash=False, seed=7)
+        rain(pa, ph, cx - 3.5, cx + 3.5, cy - 1, g, n=(6 if cond == "pouring" else 4) if full else
+             (4 if cond == "pouring" else 3), speeds=(2, 3) if full else (5, 6, 7), length=2.5 if full else 2.0,
+             slant=0.05 if full else 0.2, splash=full, seed=7)
         if cond == "sleet":
-            snow(pa, ph, cx - 2, cx + 2, cy, cy + 5, n=2, seed=8)
+            snow(pa, ph, cx - 2, cx + 2, cy, g, n=3 if full else 2, speeds=(1,) if full else (1, 2), seed=8)
         if f > 0.3:
             bolt(pa, [(cx + 0.5, cy), (cx - 1, cy + 2), (cx + 1, cy + 3), (cx - 0.5, cy + 5)], f)
         puff(pa, cx, cy - 1.5, 2.3, CLOUD_STORM if cond in ("storm", "pouring") else CLOUD_RAIN, flash=f)
     elif cond == "snow":
-        snow(pa, ph, cx - 3.5, cx + 3.5, cy, cy + 5, n=3, speeds=(1,), seed=9)
+        snow(pa, ph, cx - 3.5, cx + 3.5, cy, g, n=5 if full else 3, speeds=(1,), seed=9)
         puff(pa, cx, cy - 1.5, 2.3, CLOUD_SNOW)
     elif cond == "hail":
-        hail(pa, ph, cx - 3.5, cx + 3.5, cy, cy + 5, n=3)
+        hail(pa, ph, cx - 3.5, cx + 3.5, cy, g, n=4 if full else 3, speeds=(2, 3) if full else (6, 7))
         puff(pa, cx, cy - 1.5, 2.3, CLOUD_GREY)
     elif cond == "fog":
-        fog_bands(pa, ph, cx - 4, cx + 4, [(cy - 2, 0.8), (cy + 0.5, 0.8), (cy + 3, 0.8)])
+        rows = [(cy - 2, 0.8), (cy + 0.5, 0.8), (cy + 3, 0.8)]
+        if full:
+            rows += [(cy + 5.5 + 2.5 * k, 0.8) for k in range(8)]
+        fog_bands(pa, ph, cx - 4, cx + 4, rows)
     elif cond == "windy":
-        gusts(pa, ph, [(cy - 2, 5, 1, 0.0), (cy + 1, 6, 2, 0.5), (cy + 4, 4, 1, 0.3)], cx - 4, cx + 4)
+        rows = [(cy - 2, 5, 1, 0.0), (cy + 1, 6, 2, 0.5), (cy + 4, 4, 1, 0.3)]
+        if full:
+            rows += [(cy + 9, 5, 1, 0.65), (cy + 15, 6, 2, 0.15), (cy + 21, 5, 1, 0.8)]
+        gusts(pa, ph, rows, cx - 4, cx + 4)
     elif cond == "exceptional":
         col = lerp((255, 140, 20), (255, 215, 60), 0.5 + 0.5 * math.sin(TAU * ph * 2))
         rect(d, cx, cy - 3, cx, cy + 1, col)
@@ -628,8 +645,10 @@ def weather(condition: str, temperature: float, unit: str = "°C", frames: int =
     return [weather_frame(cond, temp, t / frames, unit) for t in range(frames)], round(WEATHER_LOOP_MS / frames)
 
 
-def forecast(days: list[tuple[str, float, float | None]], unit: str = "°C", frames: int = WEATHER_FRAMES) -> Frames:
-    """Up to three days side by side: icon, high, low. `days` = [(condition, high, low), ...]."""
+def forecast(days: list[tuple[str, float, float | None]], unit: str = "°C", frames: int = WEATHER_FRAMES,
+             full: bool = False) -> Frames:
+    """Up to three days side by side: icon, high, low. `days` = [(condition, high, low), ...].
+    full: each day's weather carries on down its column, behind its outlined temperatures."""
     days = days[:3]
     n, frames = frames, []
     for t in range(n):
@@ -637,13 +656,23 @@ def forecast(days: list[tuple[str, float, float | None]], unit: str = "°C", fra
         pa = im.load()
         for i, (cond, hi, lo) in enumerate(days):
             cx = 5 + i * 11
-            mini_icon(pa, d, normalise_condition(cond), cx, 7, t / n)
+            mini_icon(pa, d, normalise_condition(cond), cx, 7, t / n, full)
         # dividers drawn after the icons so a wide icon doesn't run into its neighbour
         for x in (10, 21):
             for y in range(31):
                 pa[x, y] = (0, 0, 0)
             for y in range(2, 30):
                 px(d, x, y, (35, 35, 50))
+        if full:
+            mask = Image.new("L", (W, W))
+            md = ImageDraw.Draw(mask)
+            for i, (cond, hi, lo) in enumerate(days):
+                cx = 5 + i * 11
+                for v, y in ((hi, 16), (lo, 23)):
+                    if v is not None:
+                        vs = str(round(v))
+                        text(md, vs, cx - text_w(vs) // 2, y, 255)
+            _backing(pa, mask, 15, 29)
         for i, (cond, hi, lo) in enumerate(days):
             cx = 5 + i * 11
             hs = str(round(hi))
