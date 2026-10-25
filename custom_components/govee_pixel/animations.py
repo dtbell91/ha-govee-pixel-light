@@ -459,6 +459,9 @@ def _flash(ph):
 _BOLT = [(17, 9), (14.5, 12.5), (17.5, 13.5), (14, 18), (15, 19)]
 
 
+OUTLINE_SHADE = 0.9  # how far the outline round text over weather darkens what's behind it (1 = black)
+
+
 def _backing(pa, mask, y0, y1, band=None):
     """Darken round the lit pixels of mask (rows y0-y1) so text stays readable over weather; band (y0, y1) also
     dims those rows."""
@@ -469,7 +472,7 @@ def _backing(pa, mask, y0, y1, band=None):
             if ma[x, y]:
                 continue
             if edge[x, y]:
-                blend(pa, x, y, (0, 0, 0), 0.9)
+                blend(pa, x, y, (0, 0, 0), OUTLINE_SHADE)
             elif band:
                 blend(pa, x, y, (0, 0, 0), 0.45 if band[0] <= y <= band[1] else 0.2)
 
