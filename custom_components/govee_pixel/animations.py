@@ -8,7 +8,7 @@ from __future__ import annotations
 import math
 from collections.abc import Callable
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFilter
 
 W = 32
 Frames = tuple[list[Image.Image], int]
@@ -356,7 +356,7 @@ def snow(pa, ph, x0, x1, y0, y1, n=6, speeds=(1, 2), seed=2, col=(245, 248, 255)
         x = x0 + (i + 0.5) * (x1 - x0) / n + ((h & 0xFF) / 255 - 0.5)
         x += 1.1 * math.sin(TAU * (ph * (c + 1) + ((h >> 4) & 0xFF) / 256))
         y = y0 - 1 + ((ph * c + ((h >> 16) & 0xFF) / 256) % 1) * fall
-        a = _clamp(y1 + 1 - y)
+        a = _clamp(y1 + 1 - y) * _clamp((y - y0 + 2) / 3)
         big = c == max(speeds)
         dot(pa, x, y, col, a, crisp=True)
         if big:
@@ -459,11 +459,34 @@ def _flash(ph):
 _BOLT = [(17, 9), (14.5, 12.5), (17.5, 13.5), (14, 18), (15, 19)]
 
 
-def draw_temp(d, t, y=21, unit="°C"):
-    """The temperature, light at the top of the digits shading darker to the bottom."""
+def draw_temp(d, t, y=21, unit="°C", backing=None, pa=None):
+    """The temperature, light at the top of the digits shading darker to the bottom.
+    backing, for weather drawn behind the digits: "outline" (a dark edge round them) or "plate" (also dims the
+    band they sit on); pa is the image's pixel access, needed for a backing."""
     s = str(t)
     col = temp_col(t, unit)
     x = (W - (text_w(s, 2) + 1 + 3)) // 2
+    mask = Image.new("L", (W, W))
+    md = ImageDraw.Draw(mask)
+    for i, ch in enumerate(s):
+        for k, b in enumerate(_glyph(ch)):
+            if b == "1":
+                gx, gy = x + i * 8 + (k % 3) * 2, y + (k // 3) * 2
+                md.rectangle([gx, gy, gx + 1, gy + 1], fill=255)
+    deg = x + len(s) * 8
+    for dx, dy in ((1, 0), (0, 1), (2, 1), (1, 2)):
+        md.point((deg + dx, y + dy), fill=255)
+    if backing:
+        ma = mask.load()
+        edge = mask.filter(ImageFilter.MaxFilter(3)).load()
+        for yy in range(y - 2, y + 12):
+            for xx in range(W):
+                if not 0 <= yy < W or ma[xx, yy]:
+                    continue
+                if edge[xx, yy]:
+                    blend(pa, xx, yy, (0, 0, 0), 0.9)
+                elif backing == "plate":
+                    blend(pa, xx, yy, (0, 0, 0), 0.45 if y - 1 <= yy <= y + 10 else 0.2)
     for row in range(5):
         c = lerp(lerp(col, (255, 255, 255), 0.3), dim(col, 0.8), row / 4)
         for i, ch in enumerate(s):
@@ -471,19 +494,22 @@ def draw_temp(d, t, y=21, unit="°C"):
                 if b == "1" and k // 3 == row:
                     gx = x + i * 8 + (k % 3) * 2
                     rect(d, gx, y + row * 2, gx + 1, y + row * 2 + 1, c)
-    x += len(s) * 8
     for dx, dy in ((1, 0), (0, 1), (2, 1), (1, 2)):
-        px(d, x + dx, y + dy, col)
+        px(d, deg + dx, y + dy, col)
 
 
-def weather_icon(pa, d, cond, ph):
-    """The 32x20 icon area of the weather display."""
+def weather_icon(pa, d, cond, ph, full=False):
+    """The weather in the 32x20 area above the temperature, or with full, falling (blowing, drifting) all the
+    way down the card behind it."""
     s = math.sin(TAU * ph)
+    g = W - 1 if full else 19  # where rain lands
     if cond == "sunny":
         sun_glow(pa, 16, 9.5, 4.5, ph)
     elif cond == "night":
-        stars(pa, ph, [(4, 3, 1, 0.0), (26, 3, 2, 0.3), (29, 12, 1, 0.6), (3, 14, 2, 0.8), (8, 8, 1, 0.45),
-                       (23, 16, 1, 0.15)])
+        spots = [(4, 3, 1, 0.0), (26, 3, 2, 0.3), (29, 12, 1, 0.6), (3, 14, 2, 0.8), (8, 8, 1, 0.45), (23, 16, 1, 0.15)]
+        if full:
+            spots += [(1, 22, 1, 0.7), (30, 25, 2, 0.05), (2, 30, 1, 0.35), (29, 31, 1, 0.9)]
+        stars(pa, ph, spots)
         shooting_star(pa, ph, (27, 1), (19, 6), at=0.55)
         moon_glow(pa, 15, 10, 6, ph)
     elif cond == "partly":
@@ -495,43 +521,66 @@ def weather_icon(pa, d, cond, ph):
         puff(pa, 19 - 1.2 * s, 12, 4.8, CLOUD_WHITE)
     elif cond == "fog":
         puff(pa, 16 + 0.8 * s, 6, 4.2, CLOUD_FOG)
-        fog_bands(pa, ph, 2, 29, [(11, 0.8), (13.5, 0.8), (16, 0.8), (18.5, 0.8)])
+        rows = [(11, 0.8), (13.5, 0.8), (16, 0.8), (18.5, 0.8)]
+        if full:
+            rows += [(21.5, 0.9), (24.5, 0.9), (27.5, 0.9), (30.5, 0.9)]
+        fog_bands(pa, ph, 0 if full else 2, W - 1 if full else 29, rows)
     elif cond in ("rain", "pouring"):
         heavy = cond == "pouring"
-        rain(pa, ph, 8 if heavy else 9, 21, 9, 19, n=10 if heavy else 6, speeds=(7, 8, 9) if heavy else (5, 6, 7),
-             length=4.0 if heavy else 3.0, slant=0.4 if heavy else 0.25)
+        if full:
+            rain(pa, ph, 2 if heavy else 3, 26, -4, g, n=18 if heavy else 12, speeds=(3, 4) if heavy else (2, 3),
+                 length=5.0 if heavy else 3.5, slant=0.25 if heavy else 0.15)
+        else:
+            rain(pa, ph, 8 if heavy else 9, 21, 9, g, n=10 if heavy else 6, speeds=(7, 8, 9) if heavy else (5, 6, 7),
+                 length=4.0 if heavy else 3.0, slant=0.4 if heavy else 0.25)
         puff(pa, 16 + 0.7 * s, 6.5, 5, CLOUD_STORM if heavy else CLOUD_RAIN)
     elif cond == "storm":
         f = _flash(ph)
         if f:
-            for y in range(20):
+            for y in range(W if full else 20):
                 for x in range(W):
-                    blend(pa, x, y, (45, 40, 90), f * 0.45 * (1 - y / 24))
-        rain(pa, ph, 9, 21, 9, 19, n=6, speeds=(6, 7, 8), length=3.0, slant=0.35, seed=4)
+                    blend(pa, x, y, (45, 40, 90), f * 0.45 * (1 - y / (40 if full else 24)))
+        if full:
+            rain(pa, ph, 3, 25, -4, g, n=13, speeds=(2, 3, 4), length=3.5, slant=0.2, seed=4)
+        else:
+            rain(pa, ph, 9, 21, 9, g, n=6, speeds=(6, 7, 8), length=3.0, slant=0.35, seed=4)
         if f > 0.3:
             bolt(pa, _BOLT, f)
         puff(pa, 16 + 0.6 * s, 6, 5.2, CLOUD_STORM, flash=f)
     elif cond == "snow":
-        snow(pa, ph, 9, 23, 10, 19, n=7)
+        if full:
+            snow(pa, ph, 1, 30, 10, g, n=14, speeds=(1,))
+        else:
+            snow(pa, ph, 9, 23, 10, g, n=7)
         puff(pa, 16 + 0.7 * s, 6.5, 5, CLOUD_SNOW)
     elif cond == "sleet":
-        rain(pa, ph, 9, 21, 9, 19, n=4, seed=5)
-        snow(pa, ph, 10, 22, 10, 19, n=4, seed=6)
+        if full:
+            rain(pa, ph, 3, 25, -4, g, n=7, speeds=(2, 3), seed=5)
+            snow(pa, ph, 2, 29, 10, g, n=7, speeds=(1,), seed=6)
+        else:
+            rain(pa, ph, 9, 21, 9, g, n=4, seed=5)
+            snow(pa, ph, 10, 22, 10, g, n=4, seed=6)
         puff(pa, 16 + 0.7 * s, 6.5, 5, CLOUD_RAIN)
     elif cond == "hail":
-        hail(pa, ph, 9, 23, 10, 19)
+        if full:
+            hail(pa, ph, 2, 29, -2, g - 1, n=9, speeds=(2, 3))
+        else:
+            hail(pa, ph, 9, 23, 10, g)
         puff(pa, 16 + 0.7 * s, 6.5, 5, CLOUD_GREY)
     elif cond == "windy":
-        gusts(pa, ph, [(4, 9, 1, 0.0), (9, 12, 2, 0.4), (14, 8, 1, 0.55), (18, 10, 2, 0.9)])
+        rows = [(4, 9, 1, 0.0), (9, 12, 2, 0.4), (14, 8, 1, 0.55), (18, 10, 2, 0.9)]
+        if full:
+            rows += [(23, 11, 1, 0.2), (28, 9, 2, 0.7)]
+        gusts(pa, ph, rows)
         leaf(pa, ph, 0, W - 1, 11)
     else:
         warning(pa, d, 16, ph)
 
 
-def weather_frame(cond, temp, ph, unit="°C"):
+def weather_frame(cond, temp, ph, unit="°C", full=False, backing="outline"):
     im, d = canvas()
-    weather_icon(im.load(), d, cond, ph)
-    draw_temp(d, temp, unit=unit)
+    weather_icon(im.load(), d, cond, ph, full)
+    draw_temp(d, temp, unit=unit, backing=backing if full else None, pa=im.load())
     return im
 
 
