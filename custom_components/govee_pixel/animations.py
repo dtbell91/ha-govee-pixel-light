@@ -163,7 +163,7 @@ def twinkle(d, t, stars, col=(255, 245, 170)):
 # access and `ph` the loop phase, 0 <= ph < 1.
 
 WEATHER_LOOP_MS = 3600
-WEATHER_FRAMES = 48  # 75 ms each: smooth, for pixeld
+WEATHER_FRAMES = 72  # 50 ms each: smooth, for pixeld
 WEATHER_FRAMES_STOCK = 32  # keeps Govee's own firmware's downloads to ~20-35 KB
 TAU = 2 * math.pi
 
@@ -291,7 +291,8 @@ def moon_glow(pa, cx, cy, r, ph):
                 glow(pa, x, y, (90, 80, 30), (0.22 + 0.08 * pulse) * math.exp(-sd / 1.6))
                 continue
             cov = _clamp(0.5 - sd)
-            col = lerp((255, 245, 200), (225, 185, 90), _clamp((x - cx + r) / (2 * r) * 0.4 + (y - cy + r) / (2 * r) * 0.6))
+            shade = _clamp(((x - cx + r) * 0.4 + (y - cy + r) * 0.6) / (2 * r))
+            col = lerp((255, 245, 200), (225, 185, 90), shade)
             blend(pa, x, y, col, cov)
 
 

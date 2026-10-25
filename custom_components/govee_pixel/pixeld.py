@@ -6,13 +6,13 @@ addressed by SHA-256: the light caches it, so playlist edits only transfer new i
 Topics under the prefix (default `govee/h8630/`):
 
     px/status          <- online / offline (retained, last will)
-    px/info            <- {"mac", "sku", "size", "firmware", "base", "pixeld"} (retained)
+    px/info            <- {"mac", "sku", "size", "firmware", "base", "pixeld", "formats"} (retained)
     px/state           <- {"on", "brightness", "showing", "item", "playlist_items", "paused"} (retained)
     px/set             -> {"on", "brightness", "resume", "next"} (any subset)
     px/show            -> {"key", "hold", "name"}  (hold 0 = until resume)
     px/playlist        -> {"items": [{"name", "key", "duration"}]} (retained)
     px/need            <- {"keys": [...]}  content the light is missing; answered on px/content/<key>
-    px/content/<key>   -> PNG / GIF bytes
+    px/content/<key>   -> PNG / APNG / GIF bytes
     telemetry, button, jack <- as for the telemetry layer (see telemetry.py)
     px/update/install  -> {"url", "sha256"}: download and install a pixeld build (not retained; the build itself
                           is served over HTTP, as brokers limit message size); px/update/rollback -> previous
@@ -58,15 +58,20 @@ def _shared_palette(images: list[Image.Image]) -> list[Image.Image]:
     return [im.quantize(palette=palette, dither=Image.Dither.NONE) for im in images]
 
 
-def encode_content(frames: list[payload.Frame], source: bytes | None = None) -> bytes:
-    """Frames -> bytes pixeld decodes: PNG for a still, GIF (one shared palette, no dithering) for an
-    animation; a source GIF already at the panel size is sent unchanged."""
+def encode_content(frames: list[payload.Frame], source: bytes | None = None, apng: bool = False) -> bytes:
+    """Frames -> bytes pixeld decodes: PNG for a still; for an animation, APNG (full colour) when the light
+    takes it, else GIF (one shared palette, no dithering). A source GIF already at the panel size is sent
+    unchanged."""
     size = frames[0].image.width
     if source is not None and len(frames) > 1 and payload.gif_passthrough(source, size) is not None:
         return source
     buf = io.BytesIO()
     if len(frames) == 1:
         frames[0].image.convert("RGB").save(buf, format="PNG", optimize=True)
+    elif apng:
+        images = [f.image.convert("RGB") for f in frames]
+        images[0].save(buf, format="PNG", save_all=True, append_images=images[1:], loop=0,
+                       duration=[f.duration for f in frames], optimize=True)
     else:
         images = _shared_palette([f.image.convert("RGB") for f in frames])
         images[0].save(buf, format="GIF", save_all=True, append_images=images[1:], loop=0,
@@ -130,6 +135,11 @@ class PixeldLink:
         def on_message(msg: mqtt.ReceiveMessage) -> None:
             handler(msg.payload)
         return on_message
+
+    @property
+    def apng(self) -> bool:
+        """Whether the light's pixeld takes APNG (older builds only take PNG and GIF)."""
+        return "apng" in ((self.info or {}).get("formats") or ())
 
     # ---- availability / state ----
     @property

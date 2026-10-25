@@ -67,7 +67,8 @@ itself. Choose **pixeld** when adding the integration (same topic prefix, defaul
 existing local entry with **Reconfigure** (the device, entities and history are kept).
 
 Compared with Govee's protocol:
-- Images and animations travel over MQTT as PNG/GIF bytes, addressed by SHA-256. The light caches them and
+- Images and animations travel over MQTT as PNG bytes (animations as full-colour APNG; GIF for pixeld builds
+  older than APNG support), addressed by SHA-256. The light caches them and
   asks (`px/need`) only for what it doesn't have, so the light never needs to reach Home Assistant over HTTP.
 - The light rotates the playlist itself and **keeps its place when the playlist changes**: editing items or
   refreshing a weather item doesn't restart the rotation or show a loading animation.

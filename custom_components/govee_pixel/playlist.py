@@ -528,7 +528,7 @@ class PixeldPlaylistController(PlaylistController):
                     continue
                 prepared = await content.async_prepare(self.hass, item["type"], options)
                 frames = await async_render_frames(self.hass, self.dev, prepared)
-                data = await self.hass.async_add_executor_job(encode_content, frames, prepared.source)
+                data = await self.hass.async_add_executor_job(encode_content, frames, prepared.source, self.link.apng)
                 out.append((item, self.link.add_content(data, playlist=True), frames))
             except content.NothingToShow as err:
                 _LOGGER.debug("%s: playlist item %r left out: %s", self.dev.name, item["name"], err)

@@ -93,7 +93,7 @@ async def async_show(hass: HomeAssistant, entry: GoveePixelConfigEntry, dev: Pix
     if isinstance(link := entry.runtime_data.iot, PixeldLink):
         # Shown until the playlist resumes (the playlist controller sends the resume when a hold ends).
         frames = await async_render_frames(hass, dev, prepared)
-        data = await hass.async_add_executor_job(encode_content, frames, prepared.source)
+        data = await hass.async_add_executor_job(encode_content, frames, prepared.source, link.apng)
         try:
             await link.async_show(data, prepared.label)
         except IotError as err:
