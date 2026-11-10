@@ -7,8 +7,8 @@ redrawn with fresh data every time they come round.
 from __future__ import annotations
 
 import asyncio
-
 import logging
+import math
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -40,6 +40,10 @@ KIND_ANIMATION = "animation"
 KIND_CLOCK = "clock"  # drawn live on lights running pixeld (keeps its own time)
 KIND_CALENDAR = "calendar"  # upcoming events (reminders); nothing to show without events
 KIND_NOW_PLAYING = "now_playing"  # album art + scrolling title while a media player plays
+# Weather scenes drawn live by pixeld from the weather data (falling back to the weather / forecast animations
+# where the light can't draw them: Govee's firmware, older pixeld builds).
+KIND_WEATHER_LIVE = "weather_live"
+KIND_FORECAST_LIVE = "forecast_live"
 
 ATTR_CALENDAR_ENTITY = "calendar_entity"
 ATTR_HOURS = "hours"
@@ -99,8 +103,21 @@ CLOCK_OPTIONS = {
     vol.Optional("seconds", default=False): cv.boolean,
 }
 
+WEATHER_LIVE_OPTIONS = {
+    vol.Required(ATTR_WEATHER_ENTITY): cv.entity_domain("weather"),
+    vol.Optional(ATTR_TEMPERATURE_UNIT): vol.In(["°C", "°F"]),
+    vol.Optional("hour12", default=False): cv.boolean,  # sunrise / sunset times
+    # found on the weather entity's device when left out (e.g. the Bureau of Meteorology's "… Hourly" entity
+    # and "… Fire Danger 0" / "… Warnings" sensors)
+    vol.Optional("hourly_entity"): cv.entity_domain("weather"),
+    vol.Optional("fire_danger_entity"): cv.entity_domain("sensor"),
+    vol.Optional("warnings_entity"): cv.entity_domain("sensor"),
+}
+
 OPTIONS = {
     KIND_IMAGE: IMAGE_OPTIONS,
+    KIND_WEATHER_LIVE: WEATHER_LIVE_OPTIONS,
+    KIND_FORECAST_LIVE: WEATHER_LIVE_OPTIONS,
     KIND_WEATHER: WEATHER_OPTIONS,
     KIND_TEXT: TEXT_OPTIONS,
     KIND_ANIMATION: ANIMATION_OPTIONS,
@@ -136,7 +153,10 @@ OPTIONS[KIND_NOW_PLAYING] = NOW_PLAYING_OPTIONS
 
 def source_entities(hass: HomeAssistant, kind: str, data: dict) -> list[str]:
     """Entities whose changes should redraw an item of this kind."""
-    if kind == KIND_WEATHER and data.get(ATTR_WEATHER_ENTITY):
+    if kind == KIND_WEATHER_LIVE:
+        companions = weather_companions(hass, data)
+        return [data[ATTR_WEATHER_ENTITY], *(e for e in companions.values() if e)]
+    if kind in (KIND_WEATHER, KIND_FORECAST_LIVE) and data.get(ATTR_WEATHER_ENTITY):
         return [data[ATTR_WEATHER_ENTITY]]
     if kind == KIND_CALENDAR:
         return list(data[ATTR_CALENDAR_ENTITY])
@@ -151,7 +171,9 @@ def source_entities(hass: HomeAssistant, kind: str, data: dict) -> list[str]:
 CONDITIONAL_KINDS = {KIND_CALENDAR, KIND_NOW_PLAYING}
 
 # Kinds the light draws itself (pixeld cards) rather than Home Assistant rendering an image.
-CARD_KINDS = {KIND_CLOCK}
+CARD_KINDS = {KIND_CLOCK, KIND_WEATHER_LIVE, KIND_FORECAST_LIVE}
+# ... and the pixeld card type each is drawn as (px/info "cards" lists the types a build draws).
+CARD_TYPES = {KIND_CLOCK: "clock", KIND_WEATHER_LIVE: "weather", KIND_FORECAST_LIVE: "forecast"}
 
 
 def clock_card(hass: HomeAssistant, data: dict) -> dict:
@@ -161,6 +183,168 @@ def clock_card(hass: HomeAssistant, data: dict) -> dict:
     if data.get(ATTR_COLOR):
         card["color"] = list(data[ATTR_COLOR])
     return card
+
+
+_COMPASS = {d: i * 22.5 for i, d in enumerate(
+    "N NNE NE ENE E ESE SE SSE S SSW SW WSW W WNW NW NNW".split())}
+
+
+_WEEKDAYS = ("MO", "TU", "WE", "TH", "FR", "SA", "SU")
+
+
+def _num(v: Any, digits: int = 1) -> float | None:
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return round(f, digits) if math.isfinite(f) else None
+
+
+def _bearing(v: Any) -> float | None:
+    if isinstance(v, str) and v.strip().upper() in _COMPASS:
+        return _COMPASS[v.strip().upper()]
+    return _num(v, 0)
+
+
+async def _forecasts(hass: HomeAssistant, entity_id: str, kind: str) -> list[dict]:
+    """The entity's forecast of this kind ("daily", "hourly"), [] if it has none."""
+    try:
+        resp = await hass.services.async_call("weather", "get_forecasts", {"entity_id": entity_id, "type": kind},
+                                              blocking=True, return_response=True)
+    except HomeAssistantError as err:
+        _LOGGER.debug("%s: no %s forecast: %s", entity_id, kind, err)
+        return []
+    return [f for f in (resp or {}).get(entity_id, {}).get("forecast", []) if isinstance(f, dict)]
+
+
+def _local(hass: HomeAssistant, f: dict) -> datetime | None:
+    from homeassistant.util import dt as dt_util
+
+    if (when := dt_util.parse_datetime(str(f.get("datetime", "")))) is None:
+        return None
+    return dt_util.as_local(when)
+
+
+def _compact(d: dict) -> dict:
+    return {k: v for k, v in d.items() if v is not None and v != ""}
+
+
+_FEATURE_HOURLY = 2  # WeatherEntityFeature.FORECAST_HOURLY
+
+
+def _has_hourly(hass: HomeAssistant, entity_id: str) -> bool:
+    state = hass.states.get(entity_id)
+    return bool(state and int(state.attributes.get("supported_features") or 0) & _FEATURE_HOURLY)
+
+
+def weather_companions(hass: HomeAssistant, data: dict) -> dict[str, str | None]:
+    """The entities a live weather item takes extra data from: an hourly forecast (the weather entity itself,
+    or another weather entity on its device that has one), and fire danger and warnings sensors on its device.
+    Options name them by hand."""
+    from homeassistant.helpers import entity_registry as er
+
+    entity_id = data[ATTR_WEATHER_ENTITY]
+    found = {"hourly": data.get("hourly_entity") or (entity_id if _has_hourly(hass, entity_id) else None),
+             "fire": data.get("fire_danger_entity"), "warnings": data.get("warnings_entity")}
+    reg = er.async_get(hass)
+    entry = reg.async_get(entity_id)
+    if entry is None or entry.device_id is None or all(found.values()):
+        return found
+    for e in er.async_entries_for_device(reg, entry.device_id):
+        if e.disabled_by is not None or e.entity_id == entity_id:
+            continue
+        uid = str(e.unique_id).lower()
+        if found["hourly"] is None and e.domain == "weather" and _has_hourly(hass, e.entity_id):
+            found["hourly"] = e.entity_id
+        elif e.domain == "sensor" and found["fire"] is None and (
+                uid.endswith("_0_fire_danger") or e.entity_id.endswith("_fire_danger_0")):
+            found["fire"] = e.entity_id  # today's rating
+        elif e.domain == "sensor" and found["warnings"] is None and (
+                uid.endswith("_warnings") or e.entity_id.endswith("_warnings")):
+            found["warnings"] = e.entity_id
+    return found
+
+
+def _hex_rgb(v: Any) -> list[int] | None:
+    v = str(v or "").lstrip("#")
+    if len(v) != 6:
+        return None
+    try:
+        return [int(v[i:i + 2], 16) for i in (0, 2, 4)]
+    except ValueError:
+        return None
+
+
+async def async_card(hass: HomeAssistant, kind: str, data: dict) -> dict:
+    """pixeld card spec for a card item (clock, weather_live, forecast_live), with the data it draws."""
+    from homeassistant.util import dt as dt_util
+
+    if kind == KIND_CLOCK:
+        return clock_card(hass, data)
+    entity_id = data[ATTR_WEATHER_ENTITY]
+    state = hass.states.get(entity_id)
+    if state is None or state.state in ("unavailable", "unknown"):
+        raise HomeAssistantError(f"No current weather available ({entity_id})")
+    a = state.attributes
+    unit = data.get(ATTR_TEMPERATURE_UNIT) or a.get("temperature_unit") or hass.config.units.temperature_unit
+    base = {"tz": hass.config.time_zone, "lat": round(hass.config.latitude, 2),
+            "lon": round(hass.config.longitude, 2), "unit": unit}
+    now = dt_util.now()
+    daily = await _forecasts(hass, entity_id, "daily")
+
+    if kind == KIND_FORECAST_LIVE:
+        days = []
+        for f in daily:
+            if (when := _local(hass, f)) is not None and when.date() < now.date():
+                continue
+            if f.get("temperature") is None:
+                continue
+            days.append(_compact({
+                "condition": f.get("condition") or "", "high": _num(f.get("temperature")),
+                "low": _num(f.get("templow")), "chance": _num(f.get("precipitation_probability"), 0),
+                "day": _WEEKDAYS[when.weekday()] if when else "",
+                "today": bool(when and when.date() == now.date()) or None}))
+            if len(days) == 3:
+                break
+        if not days:
+            raise HomeAssistantError(f"{entity_id} returned no daily forecast")
+        return {"type": "forecast", **base, "days": days}
+
+    card = {"type": "weather", **base, "hour12": data.get("hour12", False), "condition": state.state,
+            "temperature": _num(a.get("temperature")), "apparent": _num(a.get("apparent_temperature")),
+            "wind": _num(a.get("wind_speed"), 0), "wind_unit": a.get("wind_speed_unit"),
+            "bearing": _bearing(a.get("wind_bearing")), "uv": _num(a.get("uv_index")),
+            "cloud": _num(a.get("cloud_coverage"), 0), "precip_unit": a.get("precipitation_unit")}
+    # today's high and low and rain from the daily forecast, if its first day is today
+    today = next((f for f in daily[:2] if (w := _local(hass, f)) is not None and w.date() == now.date()), None)
+    if today is None and daily and (w := _local(hass, daily[0])) is not None and w - now < timedelta(hours=12):
+        today = daily[0]
+    if today:
+        card.update(high=_num(today.get("temperature")), low=_num(today.get("templow")),
+                    chance=_num(today.get("precipitation_probability"), 0), precip=_num(today.get("precipitation")))
+    companions = weather_companions(hass, data)
+    # how hard it's raining (or snowing) now, and the UV index: the next hour's forecast
+    hourly = await _forecasts(hass, companions["hourly"], "hourly") if companions["hourly"] else []
+    if hourly := [f for f in hourly if (w := _local(hass, f)) is None or w > now - timedelta(hours=1)]:
+        card["rate"] = _num(hourly[0].get("precipitation"))
+        if card.get("uv") is None:
+            card["uv"] = _num(hourly[0].get("uv_index"))
+        if card.get("cloud") is None:
+            card["cloud"] = _num(hourly[0].get("cloud_coverage"), 0)
+        if card.get("chance") is None:
+            chances = [c for f in hourly[:12] if (c := _num(f.get("precipitation_probability"), 0)) is not None]
+            card["chance"] = max(chances) if chances else None
+    # fire danger rating (e.g. "Moderate", in the Bureau's colours) and how many warnings are in force
+    if companions["fire"] and (fire := hass.states.get(companions["fire"])) is not None and \
+            fire.state not in ("unknown", "unavailable", "", "No Rating"):
+        card["fire"] = fire.state
+        card["fire_color"] = _hex_rgb(fire.attributes.get("color_fill"))
+    if companions["warnings"] and (warn := hass.states.get(companions["warnings"])) is not None:
+        try:
+            card["warnings"] = int(float(warn.state)) or None
+        except ValueError:
+            pass
+    return _compact(card)
 
 
 def _check_image(data: dict) -> dict:
@@ -467,6 +651,15 @@ def pick_player(hass: HomeAssistant, data: dict, light_area: str | None) -> str 
     return None
 
 
+async def _prepare_weather_live(hass: HomeAssistant, data: dict) -> Prepared:
+    """Where the light can't draw the live weather itself: the weather animation."""
+    return await _prepare_weather(hass, {**data, ATTR_FORECAST: False})
+
+
+async def _prepare_forecast_live(hass: HomeAssistant, data: dict) -> Prepared:
+    return await _prepare_weather(hass, {**data, ATTR_FORECAST: True})
+
+
 async def _prepare_clock(hass: HomeAssistant, data: dict) -> Prepared:
     raise HomeAssistantError("clock items are drawn by the light itself and need the pixeld connection type")
 
@@ -482,6 +675,8 @@ PREPARE = {
     KIND_TEXT: _prepare_text,
     KIND_ANIMATION: _prepare_animation,
     KIND_CLOCK: _prepare_clock,
+    KIND_WEATHER_LIVE: _prepare_weather_live,
+    KIND_FORECAST_LIVE: _prepare_forecast_live,
     KIND_CALENDAR: _prepare_calendar,
     KIND_NOW_PLAYING: _prepare_now_playing,
 }

@@ -463,6 +463,8 @@ class PixeldPlaylistController(PlaylistController):
         self._seen: dict[str, tuple | None] = {}  # media player -> its track when last seen available
         self._track_cancels: list[CALLBACK_TYPE] = []
         self._redraw_cancel: CALLBACK_TYPE | None = None
+        self._cards: dict[str, dict] = {}  # item name -> card spec, for the push being built
+        self._last_cards: dict[str, dict] = {}  # ... last good one, kept if the data is unavailable for a while
 
     @property
     def link(self):
@@ -517,11 +519,22 @@ class PixeldPlaylistController(PlaylistController):
         from .pixeld import encode_content
 
         out = []
+        self._cards = {}
         for item in self.items:
             if not self._show_if(item):
                 continue
-            if item["type"] in content.CARD_KINDS:
-                out.append((item, None, None))  # drawn by the light; see _card()
+            if item["type"] in content.CARD_KINDS and (
+                    item["type"] == content.KIND_CLOCK or self.link.draws_card(content.CARD_TYPES[item["type"]])):
+                try:  # drawn by the light from the data in the card
+                    card = await content.async_card(self.hass, item["type"], self._validated(item["type"], item["options"]))
+                except HomeAssistantError as err:
+                    if (card := self._last_cards.get(item["name"])) is None:
+                        _LOGGER.warning("%s: playlist item %r skipped: %s", self.dev.name, item["name"], err)
+                        continue
+                    _LOGGER.warning("%s: playlist item %r failed (%s); keeping its previous data",
+                                    self.dev.name, item["name"], err)
+                self._cards[item["name"]] = self._last_cards[item["name"]] = card
+                out.append((item, None, None))
                 continue
             try:
                 if (options := self._render_options(item)) is None:
@@ -553,7 +566,7 @@ class PixeldPlaylistController(PlaylistController):
             self.item_keys = {item["name"]: key for item, key, _ in rendered if key}
             self.link.set_playlist_content(set(self.item_keys.values()))
             items = [{"name": item["name"], "duration": _whole_loops(item["duration"], frames),
-                      **({"card": self._card(item)} if key is None else {"key": key})}
+                      **({"card": self._cards[item["name"]]} if key is None else {"key": key})}
                      for item, key, frames in rendered]
             playlist_key = hashlib.sha256(json.dumps(items, sort_keys=True).encode()).hexdigest()
             changed = playlist_key != self.playlist_key
@@ -669,12 +682,6 @@ class PixeldPlaylistController(PlaylistController):
             self._redraw_cancel()
             self._redraw_cancel = None
         await super().async_stop()
-
-    def _card(self, item: dict) -> dict:
-        options = self._validated(item["type"], item["options"])
-        if item["type"] == content.KIND_CLOCK:
-            return content.clock_card(self.hass, options)
-        raise HomeAssistantError(f"no card for {item['type']}")
 
     @callback
     def _on_light_state(self) -> None:
