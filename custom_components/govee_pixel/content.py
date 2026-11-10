@@ -107,6 +107,11 @@ WEATHER_LIVE_OPTIONS = {
     vol.Required(ATTR_WEATHER_ENTITY): cv.entity_domain("weather"),
     vol.Optional(ATTR_TEMPERATURE_UNIT): vol.In(["°C", "°F"]),
     vol.Optional("hour12", default=False): cv.boolean,  # sunrise / sunset times
+    # found on the weather entity's device when left out (e.g. the Bureau of Meteorology's "… Hourly" entity
+    # and "… Fire Danger 0" / "… Warnings" sensors)
+    vol.Optional("hourly_entity"): cv.entity_domain("weather"),
+    vol.Optional("fire_danger_entity"): cv.entity_domain("sensor"),
+    vol.Optional("warnings_entity"): cv.entity_domain("sensor"),
 }
 
 OPTIONS = {
@@ -148,7 +153,10 @@ OPTIONS[KIND_NOW_PLAYING] = NOW_PLAYING_OPTIONS
 
 def source_entities(hass: HomeAssistant, kind: str, data: dict) -> list[str]:
     """Entities whose changes should redraw an item of this kind."""
-    if kind in (KIND_WEATHER, KIND_WEATHER_LIVE, KIND_FORECAST_LIVE) and data.get(ATTR_WEATHER_ENTITY):
+    if kind == KIND_WEATHER_LIVE:
+        companions = weather_companions(hass, data)
+        return [data[ATTR_WEATHER_ENTITY], *(e for e in companions.values() if e)]
+    if kind in (KIND_WEATHER, KIND_FORECAST_LIVE) and data.get(ATTR_WEATHER_ENTITY):
         return [data[ATTR_WEATHER_ENTITY]]
     if kind == KIND_CALENDAR:
         return list(data[ATTR_CALENDAR_ENTITY])
@@ -221,6 +229,52 @@ def _compact(d: dict) -> dict:
     return {k: v for k, v in d.items() if v is not None and v != ""}
 
 
+_FEATURE_HOURLY = 2  # WeatherEntityFeature.FORECAST_HOURLY
+
+
+def _has_hourly(hass: HomeAssistant, entity_id: str) -> bool:
+    state = hass.states.get(entity_id)
+    return bool(state and int(state.attributes.get("supported_features") or 0) & _FEATURE_HOURLY)
+
+
+def weather_companions(hass: HomeAssistant, data: dict) -> dict[str, str | None]:
+    """The entities a live weather item takes extra data from: an hourly forecast (the weather entity itself,
+    or another weather entity on its device that has one), and fire danger and warnings sensors on its device.
+    Options name them by hand."""
+    from homeassistant.helpers import entity_registry as er
+
+    entity_id = data[ATTR_WEATHER_ENTITY]
+    found = {"hourly": data.get("hourly_entity") or (entity_id if _has_hourly(hass, entity_id) else None),
+             "fire": data.get("fire_danger_entity"), "warnings": data.get("warnings_entity")}
+    reg = er.async_get(hass)
+    entry = reg.async_get(entity_id)
+    if entry is None or entry.device_id is None or all(found.values()):
+        return found
+    for e in er.async_entries_for_device(reg, entry.device_id):
+        if e.disabled_by is not None or e.entity_id == entity_id:
+            continue
+        uid = str(e.unique_id).lower()
+        if found["hourly"] is None and e.domain == "weather" and _has_hourly(hass, e.entity_id):
+            found["hourly"] = e.entity_id
+        elif e.domain == "sensor" and found["fire"] is None and (
+                uid.endswith("_0_fire_danger") or e.entity_id.endswith("_fire_danger_0")):
+            found["fire"] = e.entity_id  # today's rating
+        elif e.domain == "sensor" and found["warnings"] is None and (
+                uid.endswith("_warnings") or e.entity_id.endswith("_warnings")):
+            found["warnings"] = e.entity_id
+    return found
+
+
+def _hex_rgb(v: Any) -> list[int] | None:
+    v = str(v or "").lstrip("#")
+    if len(v) != 6:
+        return None
+    try:
+        return [int(v[i:i + 2], 16) for i in (0, 2, 4)]
+    except ValueError:
+        return None
+
+
 async def async_card(hass: HomeAssistant, kind: str, data: dict) -> dict:
     """pixeld card spec for a card item (clock, weather_live, forecast_live), with the data it draws."""
     from homeassistant.util import dt as dt_util
@@ -268,12 +322,28 @@ async def async_card(hass: HomeAssistant, kind: str, data: dict) -> dict:
     if today:
         card.update(high=_num(today.get("temperature")), low=_num(today.get("templow")),
                     chance=_num(today.get("precipitation_probability"), 0), precip=_num(today.get("precipitation")))
-    # how hard it's raining (or snowing) now: the next hour's forecast
-    if hourly := await _forecasts(hass, entity_id, "hourly"):
+    companions = weather_companions(hass, data)
+    # how hard it's raining (or snowing) now, and the UV index: the next hour's forecast
+    hourly = await _forecasts(hass, companions["hourly"], "hourly") if companions["hourly"] else []
+    if hourly := [f for f in hourly if (w := _local(hass, f)) is None or w > now - timedelta(hours=1)]:
         card["rate"] = _num(hourly[0].get("precipitation"))
+        if card.get("uv") is None:
+            card["uv"] = _num(hourly[0].get("uv_index"))
+        if card.get("cloud") is None:
+            card["cloud"] = _num(hourly[0].get("cloud_coverage"), 0)
         if card.get("chance") is None:
             chances = [c for f in hourly[:12] if (c := _num(f.get("precipitation_probability"), 0)) is not None]
             card["chance"] = max(chances) if chances else None
+    # fire danger rating (e.g. "Moderate", in the Bureau's colours) and how many warnings are in force
+    if companions["fire"] and (fire := hass.states.get(companions["fire"])) is not None and \
+            fire.state not in ("unknown", "unavailable", "", "No Rating"):
+        card["fire"] = fire.state
+        card["fire_color"] = _hex_rgb(fire.attributes.get("color_fill"))
+    if companions["warnings"] and (warn := hass.states.get(companions["warnings"])) is not None:
+        try:
+            card["warnings"] = int(float(warn.state)) or None
+        except ValueError:
+            pass
     return _compact(card)
 
 

@@ -223,7 +223,7 @@ With the pixeld connection type the playlist works as a small dashboard. Extra i
 |---|---|---|
 | `clock` | `hour12` (false), `date` (`weekday_day` / `day_month` / `month_day` / `none`), `color`, `seconds` (bar along the bottom) | A clock drawn by the light itself in Home Assistant's time zone; keeps time without Home Assistant |
 | `calendar` | `calendar_entity` (one or a list), `hours` ahead (24), `color`, `size` (`auto` / `large`) | The next day's events: a calendar page with the day, TDAY / TMRW / weekday and time, the names below (`+2` if more follow on later days). `auto`: small text wrapped onto up to 3 lines, a line too wide for the panel sliding in place, big scrolling text if it needs more; `large`: always big scrolling text (readable from further away). Left out when there are no events |
-| `weather_live` | `weather_entity`, `temperature_unit`, `hour12` (sunrise/sunset times) | A live weather scene drawn by the light (see below) |
+| `weather_live` | `weather_entity`, `temperature_unit`, `hour12` (sunrise/sunset times); optional `hourly_entity`, `fire_danger_entity`, `warnings_entity` (found automatically) | A live weather scene drawn by the light (see below) |
 | `forecast_live` | `weather_entity`, `temperature_unit` | The next three days, drawn by the light: animated icons, high and low, then the day and chance of rain, with a rain-chance bar under each day |
 | `now_playing` | `media_player_entity` (one or a list; optional with `this_room_only` or `areas`), `color`, `this_room_only`, `areas` | Album art with title and artist scrolling along the bottom, for the first listed player that's playing. Limited to a room, any other media player playing there is shown too (after the listed ones; those reporting a title and artwork first), so no list is needed. `this_room_only: true`: only while it plays in the light's area — the player itself is in that area, or what it reports playing on (`source`, e.g. a Spotify Connect device, incl. Music Assistant's "… \| Music Assistant") is the name of a media player or device there. `areas` (ids or names): count these areas as the room instead, e.g. an open-plan living, kitchen and dining split into three HA areas. Music on a phone is left out. With pixeld, a new track (or music starting) is shown straight away for the item's duration, then the rotation carries on (not over an image or message being shown) |
 
@@ -244,6 +244,12 @@ the time without anything being re-sent:
 - **Under the sky**, in turn: the temperature with a bar showing where it is between today's low and high,
   then high/low, feels like (when 3° different), chance and amount of rain, wind speed and direction, UV
   index and level, and the next sunrise or sunset.
+
+Data the weather entity doesn't have itself is looked for on its device: an hourly forecast on another weather
+entity (the Bureau of Meteorology integration has a separate `… Hourly` entity) for the next hour's rain, the
+UV index and cloud cover, today's **fire danger rating** (`… Fire Danger 0`), shown as a four-step gauge and the
+rating in the Bureau's colours, and **warnings in force** (`… Warnings`), shown as a flashing page. Name them
+with `hourly_entity`, `fire_danger_entity` and `warnings_entity` to use others.
 
 They need a pixeld build that draws them (its `px/info` lists `"cards"`); with an older build, or on Govee's
 own firmware, they are shown as the `weather` / forecast animation instead. The item is redrawn when the
