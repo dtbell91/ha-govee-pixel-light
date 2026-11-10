@@ -249,6 +249,8 @@ playlist_add:
             - animation
             - clock
             - calendar
+            - weather_live
+            - forecast_live
             - now_playing
     options:
       example: '{"weather_entity": "weather.home"}'

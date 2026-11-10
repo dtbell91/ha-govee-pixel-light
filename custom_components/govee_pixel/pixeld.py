@@ -6,7 +6,7 @@ addressed by SHA-256: the light caches it, so playlist edits only transfer new i
 Topics under the prefix (default `govee/h8630/`):
 
     px/status          <- online / offline (retained, last will)
-    px/info            <- {"mac", "sku", "size", "firmware", "base", "pixeld", "formats"} (retained)
+    px/info            <- {"mac", "sku", "size", "firmware", "base", "pixeld", "formats", "cards"} (retained)
     px/state           <- {"on", "brightness", "showing", "item", "playlist_items", "paused"} (retained)
     px/set             -> {"on", "brightness", "resume", "next"} (any subset)
     px/show            -> {"key", "hold", "name"}  (hold 0 = until resume)
@@ -140,6 +140,11 @@ class PixeldLink:
     def apng(self) -> bool:
         """Whether the light's pixeld takes APNG (older builds only take PNG and GIF)."""
         return "apng" in ((self.info or {}).get("formats") or ())
+
+    def draws_card(self, card_type: str) -> bool:
+        """Whether the light's pixeld draws this card type (builds from before px/info listed them: clocks)."""
+        cards = (self.info or {}).get("cards")
+        return card_type in (cards if cards is not None else ("clock",))
 
     # ---- availability / state ----
     @property

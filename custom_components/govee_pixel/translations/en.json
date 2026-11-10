@@ -304,6 +304,8 @@
         "text": "Text",
         "animation": "Animation",
         "clock": "Clock (pixeld)",
+        "weather_live": "Live weather scene (pixeld)",
+        "forecast_live": "Live forecast (pixeld)",
         "calendar": "Calendar (upcoming events)",
         "now_playing": "Now playing (media player)"
       }
