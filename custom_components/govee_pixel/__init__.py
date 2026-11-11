@@ -8,6 +8,7 @@ the local-MQTT custom firmware, through Home Assistant's own broker with no clou
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -36,8 +37,8 @@ from .services import async_setup_services
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS = [Platform.BINARY_SENSOR, Platform.EVENT, Platform.IMAGE, Platform.LIGHT, Platform.NOTIFY, Platform.SENSOR,
-             Platform.SWITCH, Platform.UPDATE]
+PLATFORMS = [Platform.BINARY_SENSOR, Platform.EVENT, Platform.IMAGE, Platform.LIGHT, Platform.NOTIFY, Platform.SELECT,
+             Platform.SENSOR, Platform.SWITCH, Platform.UPDATE]
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 
@@ -54,9 +55,29 @@ class GoveePixelData:
 type GoveePixelConfigEntry = ConfigEntry[GoveePixelData]
 
 
+CARD_URL = f"/{DOMAIN}/govee-pixel-playlist-card.js"
+CARD_FILE = Path(__file__).parent / "frontend" / "govee-pixel-playlist-card.js"
+
+
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     async_setup_services(hass)
+    await _async_register_card(hass)
     return True
+
+
+async def _async_register_card(hass: HomeAssistant) -> None:
+    """Serve the playlist dashboard card and load it on every dashboard (no resource to add by hand)."""
+    from homeassistant.components.frontend import add_extra_js_url
+    from homeassistant.components.http import StaticPathConfig
+
+    try:
+        body = await hass.async_add_executor_job(CARD_FILE.read_bytes)
+        await hass.http.async_register_static_paths([StaticPathConfig(CARD_URL, str(CARD_FILE), False)])
+    except (OSError, RuntimeError) as err:  # e.g. registered already (integration reloaded)
+        _LOGGER.debug("Playlist card not registered: %s", err)
+        return
+    # a new version of the card is fetched as soon as it changes
+    add_extra_js_url(hass, f"{CARD_URL}?v={hashlib.sha256(body).hexdigest()[:10]}")
 
 
 async def _async_setup_cloud(

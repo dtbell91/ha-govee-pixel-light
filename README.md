@@ -88,8 +88,8 @@ Compared with Govee's protocol:
 |---|---|
 | `px/status` | `online` / `offline` (retained, last will) |
 | `px/info` | Light identity: MAC, SKU, panel size, firmware versions, content formats and the card types it draws (retained) |
-| `px/state` | `on`, `brightness`, `showing` (`off` / `playlist` / `image` / `idle`), current item (retained) |
-| `px/set` | `{"on", "brightness", "resume", "next"}` |
+| `px/state` | `on`, `brightness`, `showing` (`off` / `playlist` / `image` / `idle`), current item, `held`, `item_ends` (Unix ms) (retained) |
+| `px/set` | `{"on", "brightness", "resume", "next", "prev", "goto", "hold"}` (`goto`: an item's name; `hold`: stay on the item showing) |
 | `px/show` | `{"key", "hold", "name"}` |
 | `px/playlist` | `{"items": [{"name", "key", "duration"}]}` (retained) |
 | `px/need` / `px/content/<key>` | The light asks for missing content; Home Assistant sends the bytes |
@@ -116,6 +116,7 @@ Compared with Govee's protocol:
 | Message (notify) | `notify.send_message` shows the text (with the title in front, if given), then the playlist resumes after 60 s |
 | Display | What the light shows: `off`, `playlist`, `image` (something from Home Assistant), `govee_scene`, or (pixeld) `idle` / `stream` (live DDP frames) |
 | Playlist / Playlist status | Playlist switch and status (see [Playlist](#playlist)) |
+| Playlist item / Hold playlist | (pixeld) The item on screen; pick one to show it now. Hold keeps the light on the item showing (next / previous / picking an item still move it) |
 | Last image | Preview of the last picture or animation sent |
 | Power / Mode / Volume / Customize button | Event entities (`press`, `long_press`) for the light's physical buttons, for automations. The light still acts on each press itself. Local MQTT with `button` messages only |
 | Headphones | Whether headphones are plugged in. Local MQTT with `jack` messages only |
@@ -205,8 +206,29 @@ itself. Items are any of the four content types above, with the same options as 
 - `govee_pixel.playlist_add`: add an item, or replace the item with the same name (`name`,
   `item_type`, `options`, `duration`, optional `position`, optional `show_if`). With pixeld the duration is
   rounded to whole loops of an animation (at least one), so a scrolling message is never cut off part-way.
+- `govee_pixel.playlist_update`: change an item in place, giving only what changes: `new_name`, `duration`,
+  `options` (replaces them), `enabled` (off keeps the item but leaves it out of the rotation), `show_if` (empty
+  removes it), `position`. `playlist_add` takes `enabled` too.
 - `govee_pixel.playlist_remove` (`name`), `govee_pixel.playlist_clear`,
   `govee_pixel.playlist_resume`, `govee_pixel.playlist_refresh` (redraw everything now).
+- pixeld: `govee_pixel.playlist_next`, `govee_pixel.playlist_previous`, `govee_pixel.playlist_show_item` (`name`:
+  show it now for its full duration, then carry on) and `govee_pixel.playlist_hold` (`hold: true` stays on the item
+  showing, `false` carries on). Each of the first three ends an interruption.
+
+### Dashboard card
+
+The integration comes with a dashboard card (loaded automatically; no resource to add):
+
+```yaml
+type: custom:govee-pixel-playlist-card
+entity: sensor.<light>_playlist_status
+```
+
+It shows what's on the light with a bar counting down to the next item, previous / hold / next buttons, and
+the playlist: switch items on and off, move them up and down, show one now, and tap one to edit it — its name,
+time on screen, `show_if`, every option as JSON, and for live weather the pages under the sky (which, in what
+order) and how long each shows, with how long they take to go round. Items can be added and removed there too.
+Skipping, holding and showing an item need pixeld.
 
 Changes are sent to the light straight away while the playlist is playing. Automatic re-sends
 (refreshes, resuming after an interruption, re-applying) wait while the light is switched off, so
@@ -221,10 +243,10 @@ With the pixeld connection type the playlist works as a small dashboard. Extra i
 
 | `item_type` | Options | Shows |
 |---|---|---|
-| `clock` | `hour12` (false), `date` (`weekday_day` / `day_month` / `month_day` / `none`), `color`, `seconds` (bar along the bottom) | A clock drawn by the light itself in Home Assistant's time zone; keeps time without Home Assistant |
+| `clock` | `hour12` (false), `date` (`weekday_day` / `day_month` / `month_day` / `none`), `color`, `seconds` (bar along the bottom), `weather_background` (true), `weather_entity` | A clock drawn by the light itself in Home Assistant's time zone; keeps time without Home Assistant. With a live weather scene behind it: the sky and ground on top, the time below them and the date over the horizon. The weather comes from the playlist's `weather_live` item, or `weather_entity`; `weather_background: false` for a plain clock |
 | `calendar` | `calendar_entity` (one or a list), `hours` ahead (24), `color`, `size` (`auto` / `large`) | The next day's events: a calendar page with the day, TDAY / TMRW / weekday and time, the names below (`+2` if more follow on later days). `auto`: small text wrapped onto up to 3 lines, a line too wide for the panel sliding in place, big scrolling text if it needs more; `large`: always big scrolling text (readable from further away). Left out when there are no events |
-| `weather_live` | `weather_entity`, `temperature_unit`, `hour12` (sunrise/sunset times); optional `hourly_entity`, `fire_danger_entity`, `warnings_entity` (found automatically) | A live weather scene drawn by the light (see below) |
-| `forecast_live` | `weather_entity`, `temperature_unit` | The next three days, drawn by the light: animated icons, high and low, then the day and chance of rain, with a rain-chance bar under each day |
+| `weather_live` | `weather_entity`, `temperature_unit`, `hour12` (sunrise/sunset times); optional `hourly_entity`, `fire_danger_entity`, `warnings_entity` (found automatically); how the pages under the sky are shown: `pages`, `page_seconds`, `temp_seconds`, `transition`, `restart_pages` (see below) | A live weather scene drawn by the light (see below) |
+| `forecast_live` | `weather_entity`, `temperature_unit`, `page_seconds` (4: highs and lows, then days and rain chance) | The next three days, drawn by the light: animated icons, high and low, then the day and chance of rain, with a rain-chance bar under each day |
 | `now_playing` | `media_player_entity` (one or a list; optional with `this_room_only` or `areas`), `color`, `this_room_only`, `areas` | Album art with title and artist scrolling along the bottom, for the first listed player that's playing. Limited to a room, any other media player playing there is shown too (after the listed ones; those reporting a title and artwork first), so no list is needed. `this_room_only: true`: only while it plays in the light's area — the player itself is in that area, or what it reports playing on (`source`, e.g. a Spotify Connect device, incl. Music Assistant's "… \| Music Assistant") is the name of a media player or device there. `areas` (ids or names): count these areas as the room instead, e.g. an open-plan living, kitchen and dining split into three HA areas. Music on a phone is left out. With pixeld, a new track (or music starting) is shown straight away for the item's duration, then the rotation carries on (not over an image or message being shown) |
 
 #### Live weather (`weather_live`, `forecast_live`)
@@ -250,6 +272,24 @@ entity (the Bureau of Meteorology integration has a separate `… Hourly` entity
 UV index and cloud cover, today's **fire danger rating** (`… Fire Danger 0`), shown as a four-step gauge and the
 rating in the Bureau's colours, and **warnings in force** (`… Warnings`), shown as a flashing page. Name them
 with `hourly_entity`, `fire_danger_entity` and `warnings_entity` to use others.
+
+How the pages under the sky are shown:
+
+| Option | |
+|---|---|
+| `pages` | Which pages, in this order, from `temperature`, `warnings`, `high_low`, `feels_like`, `rain`, `wind`, `uv`, `fire`, `sun` (default: all, in that order). Each is still shown only when there is data for it; `[]` for the sky alone |
+| `temp_seconds` | How long the temperature shows (default 6) |
+| `page_seconds` | How long each other page shows (default 4) |
+| `transition` | Seconds for one page to slide out and the next in (default 0.35; 0 cuts straight over) |
+| `restart_pages` | Each time the item comes round, start from the first page. By default it shows the first page, then carries on from where it left off, so a short item still gets through every page over a few turns |
+
+```yaml
+options:
+  weather_entity: weather.home
+  pages: [temperature, rain, wind, fire, sun]
+  temp_seconds: 8
+  page_seconds: 5
+```
 
 They need a pixeld build that draws them (its `px/info` lists `"cards"`); with an older build, or on Govee's
 own firmware, they are shown as the `weather` / forecast animation instead. The item is redrawn when the

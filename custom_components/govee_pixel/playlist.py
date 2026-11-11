@@ -33,7 +33,7 @@ from homeassistant.helpers.template import Template, result_as_boolean
 
 from . import content, looplay, payload
 from .const import (
-    CONF_PLAYBACK, CONF_RECLAIM, CONF_REFRESH_MINUTES, CONF_RESUME, DEFAULT_REFRESH_MINUTES, PLAYBACK_HA, PLAYBACK_LIGHT,
+    ATTR_ENABLED, ATTR_WEATHER_BACKGROUND, ATTR_WEATHER_ENTITY, CONF_PLAYBACK, CONF_RECLAIM, CONF_REFRESH_MINUTES, CONF_RESUME, DEFAULT_REFRESH_MINUTES, PLAYBACK_HA, PLAYBACK_LIGHT,
     RESUME_MODE_PACKET, RESUME_REPUSH, DOMAIN,
 )
 from .display import async_push_effect, async_render, async_set_preview, file_url
@@ -53,6 +53,11 @@ STATUS_INTERRUPTED = "interrupted"
 STATUS_PAUSED = "paused"
 STATUS_ERROR = "error"
 REDRAW_DELAY = 3  # seconds: coalesce bursts of entity changes into one redraw
+
+
+def enabled(item: dict) -> bool:
+    """Whether an item is in the rotation (items can be switched off without removing them)."""
+    return item.get(ATTR_ENABLED, True) is not False
 
 
 class PlaylistController:
@@ -138,11 +143,13 @@ class PlaylistController:
             raise ServiceValidationError(f"Invalid {item_type} options: {err}") from err
 
     async def async_add(self, name: str, item_type: str, options: dict, duration: int,
-                        position: int | None = None, show_if: str | None = None) -> None:
+                        position: int | None = None, show_if: str | None = None, enabled: bool = True) -> None:
         self._validated(item_type, options)
         item = {"name": name, "type": item_type, "options": dict(options), "duration": int(duration)}
         if show_if:
             item["show_if"] = show_if
+        if not enabled:
+            item[ATTR_ENABLED] = False
         existing = next((i for i, it in enumerate(self.items) if it["name"] == name), None)
         if existing is not None:
             self.items.pop(existing)
@@ -168,6 +175,73 @@ class PlaylistController:
         self._changed(save=True)
         await self._async_apply_edit()
 
+    async def async_update(self, name: str, *, new_name: str | None = None, duration: int | None = None,
+                           options: dict | None = None, enabled: bool | None = None, show_if: str | None = None,
+                           position: int | None = None) -> None:
+        """Change an item in place: any of its name, duration, options (replaced as a whole), whether it is in
+        the rotation, its show_if ("" removes it) and its position."""
+        index = next((i for i, it in enumerate(self.items) if it["name"] == name), None)
+        if index is None:
+            raise ServiceValidationError(f"No playlist item named {name!r}")
+        item = dict(self.items[index])
+        if new_name and new_name != name:
+            if any(it["name"] == new_name for it in self.items):
+                raise ServiceValidationError(f"There is already a playlist item named {new_name!r}")
+            item["name"] = new_name
+            if name in self.item_keys:
+                self.item_keys[new_name] = self.item_keys.pop(name)
+        if options is not None:
+            self._validated(item["type"], options)
+            item["options"] = dict(options)
+        if duration is not None:
+            item["duration"] = int(duration)
+        if enabled is not None:
+            if enabled:
+                item.pop(ATTR_ENABLED, None)
+            else:
+                item[ATTR_ENABLED] = False
+        if show_if is not None:
+            if show_if.strip():
+                item["show_if"] = show_if
+            else:
+                item.pop("show_if", None)
+        self.items.pop(index)
+        if position is None:
+            position = index
+        self.items.insert(max(0, min(position, len(self.items))), item)
+        self._changed(save=True)
+        await self._async_apply_edit()
+
+    # ---------- moving through the rotation (pixeld) ----------
+    async def async_next(self, by: int = 1) -> None:
+        raise ServiceValidationError("Skipping through the playlist needs a light running pixeld")
+
+    async def async_show_item(self, name: str) -> None:
+        raise ServiceValidationError("Showing a playlist item now needs a light running pixeld")
+
+    async def async_hold(self, hold: bool) -> None:
+        raise ServiceValidationError("Holding the playlist on an item needs a light running pixeld")
+
+    playback_controls = False  # next / previous / show item / hold work (pixeld)
+
+    @property
+    def current_item(self) -> str | None:
+        """The playlist item on screen, when the light reports it."""
+        return None
+
+    @property
+    def held(self) -> bool | None:
+        return None
+
+    @property
+    def item_ends(self) -> float | None:
+        """When the light moves on from the current item (Unix time), if it reports it."""
+        return None
+
+    @property
+    def rotation(self) -> list[str]:
+        """Names of the items the light is rotating (enabled, and shown at the last push)."""
+        return [it["name"] for it in self.items if enabled(it)]
     async def _async_apply_edit(self) -> None:
         if not self.active:
             return
@@ -215,6 +289,8 @@ class PlaylistController:
         store = async_get_store(self.hass)
         out = []
         for item in self.items:
+            if not enabled(item):
+                continue
             try:
                 if (options := self._render_options(item)) is None:
                     continue
@@ -465,6 +541,7 @@ class PixeldPlaylistController(PlaylistController):
         self._redraw_cancel: CALLBACK_TYPE | None = None
         self._cards: dict[str, dict] = {}  # item name -> card spec, for the push being built
         self._last_cards: dict[str, dict] = {}  # ... last good one, kept if the data is unavailable for a while
+        self._sent: list[str] = []  # names of the items in the playlist last sent to the light
 
     @property
     def link(self):
@@ -521,12 +598,12 @@ class PixeldPlaylistController(PlaylistController):
         out = []
         self._cards = {}
         for item in self.items:
-            if not self._show_if(item):
+            if not enabled(item) or not self._show_if(item):
                 continue
             if item["type"] in content.CARD_KINDS and (
                     item["type"] == content.KIND_CLOCK or self.link.draws_card(content.CARD_TYPES[item["type"]])):
                 try:  # drawn by the light from the data in the card
-                    card = await content.async_card(self.hass, item["type"], self._validated(item["type"], item["options"]))
+                    card = await content.async_card(self.hass, item["type"], self._card_options(item))
                 except HomeAssistantError as err:
                     if (card := self._last_cards.get(item["name"])) is None:
                         _LOGGER.warning("%s: playlist item %r skipped: %s", self.dev.name, item["name"], err)
@@ -559,7 +636,7 @@ class PixeldPlaylistController(PlaylistController):
             self._async_retrack()
             rendered = await self._async_render_content()
             if not rendered and not any(it.get("show_if") or it["type"] in content.CONDITIONAL_KINDS
-                                        for it in self.items):
+                                        or not enabled(it) for it in self.items):
                 self.status, self.last_error = STATUS_ERROR, "no playlist item could be rendered"
                 self._changed()
                 raise HomeAssistantError(f"{self.dev.name}: {self.last_error}")
@@ -568,6 +645,7 @@ class PixeldPlaylistController(PlaylistController):
             items = [{"name": item["name"], "duration": _whole_loops(item["duration"], frames),
                       **({"card": self._cards[item["name"]]} if key is None else {"key": key})}
                      for item, key, frames in rendered]
+            self._sent = [it["name"] for it in items]
             playlist_key = hashlib.sha256(json.dumps(items, sort_keys=True).encode()).hexdigest()
             changed = playlist_key != self.playlist_key
             self.playlist_key = playlist_key
@@ -627,6 +705,77 @@ class PixeldPlaylistController(PlaylistController):
             except IotError as err:
                 _LOGGER.debug("%s: couldn't show the new track: %s", self.dev.name, err)
 
+    def _card_options(self, item: dict) -> dict:
+        """The item's validated options; a clock gets the weather entity of the playlist's live weather item for
+        its sky, unless it names one (or has weather_background: false), when the light can draw it."""
+        options = self._validated(item["type"], item["options"])
+        if item["type"] != content.KIND_CLOCK:
+            return options
+        if not options.get(ATTR_WEATHER_BACKGROUND, True) or not self.link.draws_card("weather"):
+            return {k: v for k, v in options.items() if k != ATTR_WEATHER_ENTITY}
+        if ATTR_WEATHER_ENTITY not in options:
+            source = next((it for it in self.items if it["type"] == content.KIND_WEATHER_LIVE and enabled(it)
+                           and it["options"].get(ATTR_WEATHER_ENTITY)), None)
+            if source is not None:
+                options = {**options, ATTR_WEATHER_ENTITY: source["options"][ATTR_WEATHER_ENTITY]}
+        return options
+
+    # ---------- moving through the rotation ----------
+    playback_controls = True
+
+    @property
+    def _light(self):
+        return self.entry.runtime_data.states[self.dev.device]
+
+    @property
+    def current_item(self) -> str | None:
+        state = self._light
+        return state.pixeld_item if state.pixeld_showing == "playlist" else None
+
+    @property
+    def held(self) -> bool | None:
+        return self._light.held
+
+    @property
+    def item_ends(self) -> float | None:
+        return self._light.item_ends
+
+    @property
+    def rotation(self) -> list[str]:
+        return list(self._sent)
+
+    @callback
+    def _left_interruption(self) -> None:
+        """The light ends an interruption when moved through the rotation: so does Home Assistant."""
+        self._cancel_resume()
+        if self.interrupt_until is not None or self.status in (STATUS_INTERRUPTED, STATUS_PAUSED):
+            self.interrupt_until = None
+            self.status = STATUS_LIGHT
+            self._changed()
+
+    def _check_playing(self) -> None:
+        if not self.active:
+            raise ServiceValidationError(f"{self.dev.name}: the playlist isn't playing")
+
+    async def async_next(self, by: int = 1) -> None:
+        self._check_playing()
+        await self._async_send(**({"next": True} if by > 0 else {"prev": True}))
+        self._left_interruption()
+
+    async def async_show_item(self, name: str) -> None:
+        self._check_playing()
+        if name not in self._sent:
+            item = next((it for it in self.items if it["name"] == name), None)
+            if item is None:
+                raise ServiceValidationError(f"No playlist item named {name!r}")
+            why = "it is switched off" if not enabled(item) else "it has nothing to show right now"
+            raise ServiceValidationError(f"{name!r} isn't in the rotation: {why}")
+        await self._async_send(goto=name)
+        self._left_interruption()
+
+    async def async_hold(self, hold: bool) -> None:
+        await self._async_send(hold=hold)
+
     def _show_if(self, item: dict) -> bool:
         if not (source := item.get("show_if")):
             return True
@@ -642,8 +791,10 @@ class PixeldPlaylistController(PlaylistController):
         entities: set[str] = set()
         templates = []
         for item in self.items:
+            if not enabled(item):
+                continue
             try:
-                entities.update(content.source_entities(self.hass, item["type"], self._validated(item["type"], item["options"])))
+                entities.update(content.source_entities(self.hass, item["type"], self._card_options(item)))
             except HomeAssistantError:
                 pass
             if item.get("show_if"):

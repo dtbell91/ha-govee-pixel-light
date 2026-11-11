@@ -27,8 +27,8 @@ from . import animations, payload
 from .const import (
     ATTR_ANIMATION, ATTR_BACKGROUND, ATTR_COLOR, ATTR_COLOR_EFFECT, ATTR_CONDITION, ATTR_FIT, ATTR_FORECAST,
     ATTR_FRAME_DURATION, ATTR_IMAGE_ENTITY, ATTR_IMAGE_PATH, ATTR_IMAGE_URL, ATTR_MAX_FRAMES, ATTR_MESSAGE, ATTR_MOTION,
-    ATTR_RESAMPLE, ATTR_SIZE, ATTR_SPARKLES, ATTR_TEMPERATURE, ATTR_TEMPERATURE_UNIT, ATTR_WEATHER_ENTITY,
-    MAX_SOURCE_BYTES,
+    ATTR_RESAMPLE, ATTR_SIZE, ATTR_SPARKLES, ATTR_TEMPERATURE, ATTR_TEMPERATURE_UNIT, ATTR_WEATHER_BACKGROUND,
+    ATTR_WEATHER_ENTITY, MAX_SOURCE_BYTES,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -101,7 +101,15 @@ CLOCK_OPTIONS = {
     vol.Optional("date", default="weekday_day"): vol.In(CLOCK_DATES),
     vol.Optional(ATTR_COLOR): RGB,
     vol.Optional("seconds", default=False): cv.boolean,
+    # pixeld: the live weather scene behind the time, from this weather entity (left out: the one a weather_live
+    # item in the same playlist uses); weather_background: false for a plain black background
+    vol.Optional(ATTR_WEATHER_ENTITY): cv.entity_domain("weather"),
+    vol.Optional(ATTR_WEATHER_BACKGROUND, default=True): cv.boolean,
 }
+
+# The weather card's info pages (pixeld), in their default order.
+WEATHER_PAGES = ["temperature", "warnings", "high_low", "feels_like", "rain", "wind", "uv", "fire", "sun"]
+PAGE_SECONDS = vol.All(vol.Coerce(float), vol.Range(1, 120))
 
 WEATHER_LIVE_OPTIONS = {
     vol.Required(ATTR_WEATHER_ENTITY): cv.entity_domain("weather"),
@@ -112,12 +120,24 @@ WEATHER_LIVE_OPTIONS = {
     vol.Optional("hourly_entity"): cv.entity_domain("weather"),
     vol.Optional("fire_danger_entity"): cv.entity_domain("sensor"),
     vol.Optional("warnings_entity"): cv.entity_domain("sensor"),
+    # how the info strip under the sky is shown: which pages, in what order, and for how long
+    vol.Optional("pages"): vol.All(cv.ensure_list, [vol.In(WEATHER_PAGES)]),
+    vol.Optional("page_seconds"): PAGE_SECONDS,
+    vol.Optional("temp_seconds"): PAGE_SECONDS,
+    vol.Optional("transition"): vol.All(vol.Coerce(float), vol.Range(0, 2)),
+    vol.Optional("restart_pages", default=False): cv.boolean,
+}
+
+FORECAST_LIVE_OPTIONS = {
+    vol.Required(ATTR_WEATHER_ENTITY): cv.entity_domain("weather"),
+    vol.Optional(ATTR_TEMPERATURE_UNIT): vol.In(["°C", "°F"]),
+    vol.Optional("page_seconds"): PAGE_SECONDS,  # highs and lows, then days and rain chances
 }
 
 OPTIONS = {
     KIND_IMAGE: IMAGE_OPTIONS,
     KIND_WEATHER_LIVE: WEATHER_LIVE_OPTIONS,
-    KIND_FORECAST_LIVE: WEATHER_LIVE_OPTIONS,
+    KIND_FORECAST_LIVE: FORECAST_LIVE_OPTIONS,
     KIND_WEATHER: WEATHER_OPTIONS,
     KIND_TEXT: TEXT_OPTIONS,
     KIND_ANIMATION: ANIMATION_OPTIONS,
@@ -156,6 +176,8 @@ def source_entities(hass: HomeAssistant, kind: str, data: dict) -> list[str]:
     if kind == KIND_WEATHER_LIVE:
         companions = weather_companions(hass, data)
         return [data[ATTR_WEATHER_ENTITY], *(e for e in companions.values() if e)]
+    if kind == KIND_CLOCK and data.get(ATTR_WEATHER_ENTITY) and data.get(ATTR_WEATHER_BACKGROUND, True):
+        return source_entities(hass, KIND_WEATHER_LIVE, {ATTR_WEATHER_ENTITY: data[ATTR_WEATHER_ENTITY]})
     if kind in (KIND_WEATHER, KIND_FORECAST_LIVE) and data.get(ATTR_WEATHER_ENTITY):
         return [data[ATTR_WEATHER_ENTITY]]
     if kind == KIND_CALENDAR:
@@ -280,7 +302,15 @@ async def async_card(hass: HomeAssistant, kind: str, data: dict) -> dict:
     from homeassistant.util import dt as dt_util
 
     if kind == KIND_CLOCK:
-        return clock_card(hass, data)
+        card = clock_card(hass, data)
+        if (entity_id := data.get(ATTR_WEATHER_ENTITY)) and data.get(ATTR_WEATHER_BACKGROUND, True):
+            try:  # the sky behind the time; without it, still a clock
+                sky = await async_card(hass, KIND_WEATHER_LIVE, {ATTR_WEATHER_ENTITY: entity_id})
+            except HomeAssistantError as err:
+                _LOGGER.debug("clock: no weather background: %s", err)
+            else:
+                card["weather"] = {k: v for k, v in sky.items() if k not in ("type", "tz")}
+        return card
     entity_id = data[ATTR_WEATHER_ENTITY]
     state = hass.states.get(entity_id)
     if state is None or state.state in ("unavailable", "unknown"):
@@ -308,13 +338,17 @@ async def async_card(hass: HomeAssistant, kind: str, data: dict) -> dict:
                 break
         if not days:
             raise HomeAssistantError(f"{entity_id} returned no daily forecast")
-        return {"type": "forecast", **base, "days": days}
+        return _compact({"type": "forecast", **base, "days": days, "page_seconds": data.get("page_seconds")})
 
     card = {"type": "weather", **base, "hour12": data.get("hour12", False), "condition": state.state,
             "temperature": _num(a.get("temperature")), "apparent": _num(a.get("apparent_temperature")),
             "wind": _num(a.get("wind_speed"), 0), "wind_unit": a.get("wind_speed_unit"),
             "bearing": _bearing(a.get("wind_bearing")), "uv": _num(a.get("uv_index")),
-            "cloud": _num(a.get("cloud_coverage"), 0), "precip_unit": a.get("precipitation_unit")}
+            "cloud": _num(a.get("cloud_coverage"), 0), "precip_unit": a.get("precipitation_unit"),
+            # how the info pages are shown
+            "pages": data.get("pages"), "page_seconds": data.get("page_seconds"),
+            "temp_seconds": data.get("temp_seconds"), "transition": data.get("transition"),
+            "restart_pages": data.get("restart_pages") or None}
     # today's high and low and rain from the daily forecast, if its first day is today
     today = next((f for f in daily[:2] if (w := _local(hass, f)) is not None and w.date() == now.date()), None)
     if today is None and daily and (w := _local(hass, daily[0])) is not None and w - now < timedelta(hours=12):

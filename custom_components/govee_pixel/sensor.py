@@ -14,7 +14,7 @@ from . import GoveePixelConfigEntry
 from .device_state import SHOWING_OPTIONS
 from .entity import LightStateEntity, PlaylistEntity, TelemetryEntity
 from .playlist import (
-    STATUS_ERROR, STATUS_HA, STATUS_INTERRUPTED, STATUS_LIGHT, STATUS_PAUSED, STATUS_STOPPED,
+    enabled, STATUS_ERROR, STATUS_HA, STATUS_INTERRUPTED, STATUS_LIGHT, STATUS_PAUSED, STATUS_STOPPED,
 )
 
 
@@ -35,6 +35,9 @@ class PlaylistStatus(PlaylistEntity, SensorEntity):
     _attr_device_class = SensorDeviceClass.ENUM
     _attr_options = [STATUS_STOPPED, STATUS_LIGHT, STATUS_HA, STATUS_INTERRUPTED, STATUS_PAUSED, STATUS_ERROR]
     _attr_icon = "mdi:playlist-star"
+    # the item list (with each item's options, for the dashboard card) changes rarely and can be long; what's
+    # showing changes every few seconds: keep both out of the history
+    _unrecorded_attributes = frozenset({"items", "rotation", "current_item", "item_ends", "held"})
 
     @property
     def native_value(self) -> str:
@@ -44,8 +47,15 @@ class PlaylistStatus(PlaylistEntity, SensorEntity):
     def extra_state_attributes(self) -> dict[str, Any]:
         c = self.controller
         return {
-            "items": [{"name": i["name"], "type": i["type"], "duration": i["duration"]} for i in c.items],
+            "items": [{"name": i["name"], "type": i["type"], "duration": i["duration"], "enabled": enabled(i),
+                       "options": i.get("options", {}), **({"show_if": i["show_if"]} if i.get("show_if") else {})}
+                      for i in c.items],
             "item_count": len(c.items),
+            "rotation": c.rotation,
+            "current_item": c.current_item,
+            "held": c.held,
+            "item_ends": _ts(c.item_ends),
+            "playback_controls": c.playback_controls,
             "playback": c.playback,
             "resume_at": _ts(c.interrupt_until),
             "last_push": _ts(c.last_push),

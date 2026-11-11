@@ -7,8 +7,9 @@ Topics under the prefix (default `govee/h8630/`):
 
     px/status          <- online / offline (retained, last will)
     px/info            <- {"mac", "sku", "size", "firmware", "base", "pixeld", "formats", "cards"} (retained)
-    px/state           <- {"on", "brightness", "showing", "item", "playlist_items", "paused"} (retained)
-    px/set             -> {"on", "brightness", "resume", "next"} (any subset)
+    px/state           <- {"on", "brightness", "showing", "item", "playlist_items", "paused", "index", "held",
+                          "item_ends"} (retained; item_ends in Unix ms)
+    px/set             -> {"on", "brightness", "resume", "next", "prev", "goto", "hold"} (any subset)
     px/show            -> {"key", "hold", "name"}  (hold 0 = until resume)
     px/playlist        -> {"items": [{"name", "key", "duration"}]} (retained)
     px/need            <- {"keys": [...]}  content the light is missing; answered on px/content/<key>

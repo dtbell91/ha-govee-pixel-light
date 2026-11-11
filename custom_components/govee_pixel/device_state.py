@@ -48,6 +48,9 @@ class DeviceState:
         self.mode: bytes | None = None  # last mode echo (aa 05 ..)
         self.last_report: float | None = None
         self.pixeld_showing: str | None = None  # set when the light runs pixeld (no mode echo)
+        self.pixeld_item: str | None = None  # pixeld: the item showing (playlist item, or the image's name)
+        self.held: bool | None = None  # pixeld: the rotation is held on the current item
+        self.item_ends: float | None = None  # pixeld: when the rotation moves on (Unix time)
         self._listeners: list[Callable[[], None]] = []
 
     @callback
@@ -104,12 +107,17 @@ class DeviceState:
         on = state.get("on")
         brightness = state.get("brightness")
         showing = _PIXELD_SHOWING.get(state.get("showing"), SHOWING_IDLE)
-        changed = (on, brightness, showing) != (self.on, self.brightness, self.pixeld_showing)
+        item = state.get("item") or None
+        held = bool(state["held"]) if "held" in state else None  # None: a build without hold
+        ends = state.get("item_ends")
+        ends = ends / 1000 if isinstance(ends, (int, float)) and ends > 0 else None
+        changed = (on, brightness, showing, item, held, ends) != (
+            self.on, self.brightness, self.pixeld_showing, self.pixeld_item, self.held, self.item_ends)
         if isinstance(on, bool):
             self.on = on
         if isinstance(brightness, int) and brightness > 0:
             self.brightness = brightness
-        self.pixeld_showing = showing
+        self.pixeld_showing, self.pixeld_item, self.held, self.item_ends = showing, item, held, ends
         self.last_report = time.time()
         if changed:
             self._notify()

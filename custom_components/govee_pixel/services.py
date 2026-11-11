@@ -12,11 +12,12 @@ from homeassistant.helpers import config_validation as cv, device_registry as dr
 
 from . import content, looplay
 from .const import (
-    ATTR_DEVICE_ID, ATTR_DURATION, ATTR_ITEM_TYPE, ATTR_NAME, ATTR_OPTIONS, ATTR_POSITION, ATTR_SHOW_IF,
-    DEFAULT_INTERRUPT_SECONDS,
-    DEFAULT_ITEM_SECONDS, DOMAIN, SERVICE_PLAYLIST_ADD, SERVICE_PLAYLIST_CLEAR, SERVICE_PLAYLIST_REFRESH,
-    SERVICE_PLAYLIST_REMOVE, SERVICE_PLAYLIST_RESUME, SERVICE_SHOW_ANIMATION, SERVICE_SHOW_IMAGE, SERVICE_SHOW_TEXT,
-    SERVICE_SHOW_WEATHER,
+    ATTR_DEVICE_ID, ATTR_DURATION, ATTR_ENABLED, ATTR_HOLD, ATTR_ITEM_TYPE, ATTR_NAME, ATTR_NEW_NAME, ATTR_OPTIONS,
+    ATTR_POSITION, ATTR_SHOW_IF, DEFAULT_INTERRUPT_SECONDS,
+    DEFAULT_ITEM_SECONDS, DOMAIN, SERVICE_PLAYLIST_ADD, SERVICE_PLAYLIST_CLEAR, SERVICE_PLAYLIST_HOLD,
+    SERVICE_PLAYLIST_NEXT, SERVICE_PLAYLIST_PREVIOUS, SERVICE_PLAYLIST_REFRESH, SERVICE_PLAYLIST_REMOVE,
+    SERVICE_PLAYLIST_RESUME, SERVICE_PLAYLIST_SHOW_ITEM, SERVICE_PLAYLIST_UPDATE, SERVICE_SHOW_ANIMATION,
+    SERVICE_SHOW_IMAGE, SERVICE_SHOW_TEXT, SERVICE_SHOW_WEATHER,
 )
 from .display import async_show
 
@@ -59,7 +60,20 @@ PLAYLIST_ADD_SCHEMA = vol.Schema({
     vol.Optional(ATTR_DURATION, default=DEFAULT_ITEM_SECONDS): vol.All(vol.Coerce(int), vol.Range(1, 65535)),
     vol.Optional(ATTR_POSITION): vol.All(vol.Coerce(int), vol.Range(0, looplay.MAX_ITEMS - 1)),
     vol.Optional(ATTR_SHOW_IF): cv.string,
+    vol.Optional(ATTR_ENABLED, default=True): cv.boolean,
 })
+PLAYLIST_UPDATE_SCHEMA = vol.Schema({
+    **TARGET,
+    vol.Required(ATTR_NAME): cv.string,
+    vol.Optional(ATTR_NEW_NAME): vol.All(cv.string, vol.Length(1, 64)),
+    vol.Optional(ATTR_OPTIONS): dict,
+    vol.Optional(ATTR_DURATION): vol.All(vol.Coerce(int), vol.Range(1, 65535)),
+    vol.Optional(ATTR_POSITION): vol.All(vol.Coerce(int), vol.Range(0, looplay.MAX_ITEMS - 1)),
+    vol.Optional(ATTR_SHOW_IF): vol.Any(None, cv.string),
+    vol.Optional(ATTR_ENABLED): cv.boolean,
+})
+PLAYLIST_SHOW_ITEM_SCHEMA = vol.Schema({**TARGET, vol.Required(ATTR_NAME): cv.string})
+PLAYLIST_HOLD_SCHEMA = vol.Schema({**TARGET, vol.Optional(ATTR_HOLD, default=True): cv.boolean})
 PLAYLIST_REMOVE_SCHEMA = vol.Schema({**TARGET, vol.Required(ATTR_NAME): cv.string})
 TARGET_SCHEMA = vol.Schema(TARGET)
 
@@ -101,7 +115,38 @@ async def _async_show(call: ServiceCall, kind: str) -> ServiceResponse:
 async def _async_playlist_add(call: ServiceCall) -> None:
     for c in _controllers(call):
         await c.async_add(call.data[ATTR_NAME], call.data[ATTR_ITEM_TYPE], call.data[ATTR_OPTIONS],
-                          call.data[ATTR_DURATION], call.data.get(ATTR_POSITION), call.data.get(ATTR_SHOW_IF))
+                          call.data[ATTR_DURATION], call.data.get(ATTR_POSITION), call.data.get(ATTR_SHOW_IF),
+                          call.data[ATTR_ENABLED])
+
+
+async def _async_playlist_update(call: ServiceCall) -> None:
+    d = call.data
+    show_if = d.get(ATTR_SHOW_IF)
+    for c in _controllers(call):
+        await c.async_update(d[ATTR_NAME], new_name=d.get(ATTR_NEW_NAME), duration=d.get(ATTR_DURATION),
+                             options=d.get(ATTR_OPTIONS), enabled=d.get(ATTR_ENABLED),
+                             show_if="" if ATTR_SHOW_IF in d and show_if is None else show_if,
+                             position=d.get(ATTR_POSITION))
+
+
+async def _async_playlist_next(call: ServiceCall) -> None:
+    for c in _controllers(call):
+        await c.async_next(1)
+
+
+async def _async_playlist_previous(call: ServiceCall) -> None:
+    for c in _controllers(call):
+        await c.async_next(-1)
+
+
+async def _async_playlist_show_item(call: ServiceCall) -> None:
+    for c in _controllers(call):
+        await c.async_show_item(call.data[ATTR_NAME])
+
+
+async def _async_playlist_hold(call: ServiceCall) -> None:
+    for c in _controllers(call):
+        await c.async_hold(call.data[ATTR_HOLD])
 
 
 async def _async_playlist_remove(call: ServiceCall) -> None:
@@ -138,5 +183,10 @@ def async_setup_services(hass: HomeAssistant) -> None:
         (SERVICE_PLAYLIST_CLEAR, _async_playlist_clear, TARGET_SCHEMA),
         (SERVICE_PLAYLIST_RESUME, _async_playlist_resume, TARGET_SCHEMA),
         (SERVICE_PLAYLIST_REFRESH, _async_playlist_refresh, TARGET_SCHEMA),
+        (SERVICE_PLAYLIST_UPDATE, _async_playlist_update, PLAYLIST_UPDATE_SCHEMA),
+        (SERVICE_PLAYLIST_NEXT, _async_playlist_next, TARGET_SCHEMA),
+        (SERVICE_PLAYLIST_PREVIOUS, _async_playlist_previous, TARGET_SCHEMA),
+        (SERVICE_PLAYLIST_SHOW_ITEM, _async_playlist_show_item, PLAYLIST_SHOW_ITEM_SCHEMA),
+        (SERVICE_PLAYLIST_HOLD, _async_playlist_hold, PLAYLIST_HOLD_SCHEMA),
     ):
         hass.services.async_register(DOMAIN, service, handler, schema=schema)

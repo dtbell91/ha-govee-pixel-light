@@ -110,6 +110,9 @@
     "switch": {
       "playlist": {
         "name": "Playlist"
+      },
+      "playlist_hold": {
+        "name": "Hold playlist"
       }
     },
     "sensor": {
@@ -224,6 +227,11 @@
     "update": {
       "pixeld": {
         "name": "pixeld"
+      }
+    },
+    "select": {
+      "playlist_item": {
+        "name": "Playlist item"
       }
     }
   },
@@ -493,6 +501,96 @@
         "show_if": {
           "name": "Show if",
           "description": "Template: the item is in the rotation only while this is true (pixeld). Re-checked when the entities it uses change."
+        },
+        "enabled": {
+          "name": "In the rotation",
+          "description": "Off: the item is kept in the playlist but left out of the rotation until switched on (playlist_update)."
+        }
+      }
+    },
+    "playlist_update": {
+      "name": "Update playlist item",
+      "description": "Change an existing item in place: only the fields given change.",
+      "fields": {
+        "device_id": {
+          "name": "Light",
+          "description": "Pixel light(s) whose playlist to change."
+        },
+        "name": {
+          "name": "Name",
+          "description": "Item to change."
+        },
+        "new_name": {
+          "name": "New name",
+          "description": "Rename the item."
+        },
+        "enabled": {
+          "name": "In the rotation",
+          "description": "Off: keep the item but leave it out of the rotation."
+        },
+        "duration": {
+          "name": "Duration",
+          "description": "Seconds on screen each time round."
+        },
+        "position": {
+          "name": "Position",
+          "description": "Move the item to this place in the list (0 = first)."
+        },
+        "options": {
+          "name": "Options",
+          "description": "The item's options, replacing the current ones (as for playlist_add)."
+        },
+        "show_if": {
+          "name": "Show if",
+          "description": "Template: the item is shown only while it renders true. Empty removes it."
+        }
+      }
+    },
+    "playlist_next": {
+      "name": "Next playlist item",
+      "description": "Skip to the next item now (ends an interruption). pixeld only.",
+      "fields": {
+        "device_id": {
+          "name": "Light",
+          "description": "Pixel light(s) whose playlist to change."
+        }
+      }
+    },
+    "playlist_previous": {
+      "name": "Previous playlist item",
+      "description": "Go back to the previous item now (ends an interruption). pixeld only.",
+      "fields": {
+        "device_id": {
+          "name": "Light",
+          "description": "Pixel light(s) whose playlist to change."
+        }
+      }
+    },
+    "playlist_show_item": {
+      "name": "Show playlist item",
+      "description": "Show this item now for its full duration, then carry on with the rotation (ends an interruption). pixeld only.",
+      "fields": {
+        "device_id": {
+          "name": "Light",
+          "description": "Pixel light(s) whose playlist to change."
+        },
+        "name": {
+          "name": "Name",
+          "description": "Item to show; it must be in the rotation (switched on, with something to show)."
+        }
+      }
+    },
+    "playlist_hold": {
+      "name": "Hold playlist",
+      "description": "Stay on the item showing (next, previous and show item still move it), or carry on rotating. pixeld only.",
+      "fields": {
+        "device_id": {
+          "name": "Light",
+          "description": "Pixel light(s) whose playlist to change."
+        },
+        "hold": {
+          "name": "Hold",
+          "description": "On: stay on the current item; off: carry on rotating."
         }
       }
     },

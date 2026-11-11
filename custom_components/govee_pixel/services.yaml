@@ -274,6 +274,80 @@ playlist_add:
       example: "{{ now().weekday() == 0 and now().hour >= 17 }}"
       selector:
         template:
+    enabled:
+      default: true
+      selector:
+        boolean:
+
+playlist_update:
+  fields:
+    device_id:
+      required: true
+      selector:
+        device:
+          integration: govee_pixel
+          multiple: true
+    name:
+      required: true
+      example: weather
+      selector:
+        text:
+    new_name:
+      selector:
+        text:
+    enabled:
+      selector:
+        boolean:
+    duration:
+      selector:
+        number:
+          min: 1
+          max: 65535
+          unit_of_measurement: s
+          mode: box
+    position:
+      selector:
+        number:
+          min: 0
+          max: 19
+          mode: box
+    options:
+      example: '{"weather_entity": "weather.home", "pages": ["temperature", "rain", "wind"], "page_seconds": 5}'
+      selector:
+        object:
+    show_if:
+      selector:
+        template:
+
+playlist_next:
+  fields:
+    device_id: &target_playing
+      required: true
+      selector:
+        device:
+          integration: govee_pixel
+          multiple: true
+
+playlist_previous:
+  fields:
+    device_id: *target_playing
+
+playlist_show_item:
+  fields:
+    device_id: *target_playing
+    name:
+      required: true
+      example: weather
+      selector:
+        text:
+
+playlist_hold:
+  fields:
+    device_id: *target_playing
+    hold:
+      default: true
+      selector:
+        boolean:
 
 playlist_remove:
   fields:
