@@ -78,6 +78,13 @@ PLAYLIST_REMOVE_SCHEMA = vol.Schema({**TARGET, vol.Required(ATTR_NAME): cv.strin
 TARGET_SCHEMA = vol.Schema(TARGET)
 
 
+def _entry_ids(device: dr.DeviceEntry) -> set[str]:
+    """Config entries of a device: config_entry_id since HA 2026.11, config_entries before."""
+    if (entry_id := getattr(device, "config_entry_id", None)) is not None:
+        return {entry_id}
+    return set(device.config_entries)
+
+
 def _resolve(hass: HomeAssistant, device_ids: list[str]) -> list[tuple[GoveePixelConfigEntry, str]]:
     dev_reg = dr.async_get(hass)
     out = []
@@ -85,7 +92,7 @@ def _resolve(hass: HomeAssistant, device_ids: list[str]) -> list[tuple[GoveePixe
         device = dev_reg.async_get(device_id)
         govee_id = next((i[1] for i in device.identifiers if i[0] == DOMAIN), None) if device else None
         entry = next((e for e in hass.config_entries.async_entries(DOMAIN)
-                      if device and e.entry_id in device.config_entries), None)
+                      if device and e.entry_id in _entry_ids(device)), None)
         if govee_id is None or entry is None:
             raise ServiceValidationError(f"{device_id} is not a Govee Pixel Light device")
         if entry.state is not ConfigEntryState.LOADED or govee_id not in entry.runtime_data.devices:
