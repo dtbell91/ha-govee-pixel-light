@@ -63,7 +63,7 @@ def encode_content(frames: list[payload.Frame], source: bytes | None = None, apn
     """Frames -> bytes pixeld decodes: PNG for a still; for an animation, APNG (full colour) when the light
     takes it, else GIF (one shared palette, no dithering). A source GIF already at the panel size is sent
     unchanged."""
-    size = frames[0].image.width
+    size = frames[0].image.size
     if source is not None and len(frames) > 1 and payload.gif_passthrough(source, size) is not None:
         return source
     buf = io.BytesIO()

@@ -266,7 +266,7 @@ class PlaylistController:
             self.status, self.last_error, self._ha_fallback = STATUS_STOPPED, None, False
             self.reapply_pending = False
             # Replace the rotation on the light with a blank screen.
-            blank = content.Prepared(lambda size, _max_frames: [payload.Frame(Image.new("RGB", (size, size)), 1000)],
+            blank = content.Prepared(lambda size, _max_frames: [payload.Frame(Image.new("RGB", payload.dims(size)), 1000)],
                                      (0, 0, 0), "blank")
             effect, _ = await async_render(self.hass, self.entry, self.dev, blank)
             await async_push_effect(self.hass, self.entry, self.dev, effect)

@@ -37,6 +37,16 @@ RESAMPLE = {
 }
 
 
+Size = int | tuple[int, int]  # a side (square panel) or (width, height)
+
+
+def dims(size: Size) -> tuple[int, int]:
+    """(width, height) of a panel given as one side or as a pair."""
+    if isinstance(size, int):
+        return size, size
+    return int(size[0]), int(size[1])
+
+
 @dataclass
 class Frame:
     image: Image.Image  # RGB, matrix-sized
@@ -64,26 +74,27 @@ def build_effect(frames: list[Frame], background: tuple[int, int, int] = (0, 0, 
             + b"\x00" + bytes([len(frames)]) + layers + b"\x00")
 
 
-def _fit(img: Image.Image, size: int, fit: str, resample: Image.Resampling,
+def _fit(img: Image.Image, size: Size, fit: str, resample: Image.Resampling,
          background: tuple[int, int, int]) -> Image.Image:
-    """Flatten onto the background and scale to size x size."""
+    """Flatten onto the background and scale to the panel size."""
+    tw, th = dims(size)
     rgba = img.convert("RGBA")
     if fit == FIT_STRETCH:
-        scaled = rgba.resize((size, size), resample)
+        scaled = rgba.resize((tw, th), resample)
         offset = (0, 0)
     else:
         w, h = rgba.size
-        scale = (min if fit == FIT_CONTAIN else max)(size / w, size / h)
+        scale = (min if fit == FIT_CONTAIN else max)(tw / w, th / h)
         nw, nh = max(1, round(w * scale)), max(1, round(h * scale))
         scaled = rgba.resize((nw, nh), resample)
-        offset = ((size - nw) // 2, (size - nh) // 2)
-    canvas = Image.new("RGBA", (size, size), background + (255,))
+        offset = ((tw - nw) // 2, (th - nh) // 2)
+    canvas = Image.new("RGBA", (tw, th), background + (255,))
     canvas.alpha_composite(scaled, (max(0, offset[0]), max(0, offset[1])),
                            (max(0, -offset[0]), max(0, -offset[1])))
     return canvas.convert("RGB")
 
 
-def frames_from_images(images: Iterable[tuple[Image.Image, int]], size: int = 32, fit: str = FIT_CONTAIN,
+def frames_from_images(images: Iterable[tuple[Image.Image, int]], size: Size = 32, fit: str = FIT_CONTAIN,
                        resample: str = "lanczos", background: tuple[int, int, int] = (0, 0, 0),
                        max_frames: int = MAX_FRAMES) -> list[Frame]:
     """Fit (image, duration_ms) pairs to the matrix.
@@ -95,7 +106,7 @@ def frames_from_images(images: Iterable[tuple[Image.Image, int]], size: int = 32
     rs = RESAMPLE[resample]
     frames: list[Frame] = []
     for raw, d in images:
-        if raw.size == (size, size) and raw.mode == "RGB":
+        if raw.size == dims(size) and raw.mode == "RGB":
             img = raw.copy()
         else:
             img = _fit(raw, size, fit, rs, background)
@@ -117,7 +128,7 @@ def frames_from_images(images: Iterable[tuple[Image.Image, int]], size: int = 32
     return frames
 
 
-def frames_from_image(data: bytes, size: int = 32, fit: str = FIT_CONTAIN, resample: str = "lanczos",
+def frames_from_image(data: bytes, size: Size = 32, fit: str = FIT_CONTAIN, resample: str = "lanczos",
                       background: tuple[int, int, int] = (0, 0, 0), duration: int | None = None,
                       max_frames: int = MAX_FRAMES) -> list[Frame]:
     """Decode a still or animated image (PNG, JPEG, GIF, WebP, APNG...) into matrix frames.
@@ -149,13 +160,13 @@ def build_gif_effect(frames: list[Frame]) -> bytes:
     return b"\x50\x5d" + encode_gif(frames)
 
 
-def gif_passthrough(data: bytes, size: int) -> bytes | None:
-    """The source as a GIF effect unchanged, if it already is a size x size GIF; else None."""
+def gif_passthrough(data: bytes, size: Size) -> bytes | None:
+    """The source as a GIF effect unchanged, if it already is a panel-sized GIF; else None."""
     if data[:6] not in (b"GIF89a", b"GIF87a"):
         return None
     try:
         with Image.open(io.BytesIO(data)) as im:
-            if (im.size != (size, size) or getattr(im, "n_frames", 1) > MAX_FRAMES
+            if (im.size != dims(size) or getattr(im, "n_frames", 1) > MAX_FRAMES
                     or "transparency" in im.info):
                 return None
     except OSError:
@@ -171,7 +182,7 @@ def encode_effect(frames: list[Frame], background: tuple[int, int, int] = (0, 0,
                   encoder: str = ENCODER_FRAMES, source: bytes | None = None) -> bytes:
     """Pick the effect encoding for these frames."""
     if encoder == ENCODER_AUTO:
-        size = frames[0].image.width
+        size = frames[0].image.size
         if source is not None and (raw := gif_passthrough(source, size)) is not None:
             return raw
         png = build_effect(frames, background)
