@@ -14,6 +14,17 @@ APP_HOST = "https://app2.govee.com"
 APP_VERSION = "7.7.02"
 # goodsType 285/286 = "H663X" in the app; the H8630 Gaming Pixel Light is 285.
 SUPPORTED_GOODS_TYPES = (285, 286)
+SUPPORTED_SKUS = ("H6630", "H6631", "H8630")
+# Panels that aren't square: the pixel count ("ic") alone can't give their shape.
+PANEL_SIZES = {"H6631": (52, 32)}
+
+
+def panel_size(sku: str, ic: int) -> tuple[int, int]:
+    """(width, height) of the light's panel."""
+    if sku in PANEL_SIZES:
+        return PANEL_SIZES[sku]
+    side = int(ic ** 0.5)
+    return (side, side) if side * side == ic else (32, 32)
 
 
 class GoveeError(Exception):
@@ -116,16 +127,15 @@ class GoveeApi:
         data = await self._call("POST", "/device/rest/devices/v1/list", {})
         out = []
         for dev in data.get("devices") or []:
-            if dev.get("goodsType") not in SUPPORTED_GOODS_TYPES:
+            if dev.get("goodsType") not in SUPPORTED_GOODS_TYPES and dev.get("sku") not in SUPPORTED_SKUS:
                 continue
             settings = (dev.get("deviceExt") or {}).get("deviceSettings") or {}
             if isinstance(settings, str):
                 settings = json.loads(settings)
-            ic = int(settings.get("ic") or 1024)
-            side = int(ic ** 0.5) if int(ic ** 0.5) ** 2 == ic else 32
+            width, height = panel_size(dev["sku"], int(settings.get("ic") or 1024))
             out.append(PixelDevice(
                 device=dev["device"], sku=dev["sku"], name=dev.get("deviceName") or dev["sku"],
-                topic=settings["topic"], width=side, height=side,
+                topic=settings["topic"], width=width, height=height,
                 sw_version=settings.get("wifiSoftVersion") or dev.get("versionSoft", ""),
                 hw_version=settings.get("wifiHardVersion") or dev.get("versionHard", ""),
             ))

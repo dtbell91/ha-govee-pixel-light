@@ -405,7 +405,7 @@ def options_schema(kind: str) -> vol.Schema:
     return vol.All(schema, CHECKS[kind]) if kind in CHECKS else schema
 
 
-Render = Callable[[int, int], list[payload.Frame]]
+Render = Callable[[payload.Size, int], list[payload.Frame]]
 
 
 @dataclass
@@ -418,9 +418,12 @@ class Prepared:
 
 def _generated(render: Callable[[int], animations.Frames]) -> Render:
     """Adapt a 32x32 animation renderer (given the most frames the light takes) to the target matrix size."""
-    def run(size: int, max_frames: int) -> list[payload.Frame]:
+    def run(size: payload.Size, max_frames: int) -> list[payload.Frame]:
         images, ms = render(max_frames)
-        return payload.frames_from_images(((im, ms) for im in images), size=size, fit=payload.FIT_STRETCH,
+        w, h = payload.dims(size)
+        # Square art on a wide panel (H6631, 52x32) is centered, not stretched.
+        fit = payload.FIT_STRETCH if w == h else payload.FIT_CONTAIN
+        return payload.frames_from_images(((im, ms) for im in images), size=size, fit=fit,
                                           resample="nearest", max_frames=max_frames)
     return run
 
@@ -586,14 +589,20 @@ async def _prepare_now_playing(hass: HomeAssistant, data: dict) -> Prepared:
     caption = " - ".join(x for x in (title, artist) if x).upper()
     color = tuple(data[ATTR_COLOR]) if data.get(ATTR_COLOR) else (255, 255, 255)
 
-    def render(size: int, _max_frames: int) -> list[payload.Frame]:
+    def render(size: payload.Size, _max_frames: int) -> list[payload.Frame]:
+        w, h = payload.dims(size)
+        side = min(w, h)  # now_playing draws a square; a wide panel gets it centered
         cover = None
         if art:
             try:
-                cover = payload.frames_from_image(art, size=size, fit=payload.FIT_COVER, max_frames=1)[0].image
+                cover = payload.frames_from_image(art, size=side, fit=payload.FIT_COVER, max_frames=1)[0].image
             except (OSError, ValueError) as err:  # unreadable artwork: show the track without it, never a stale one
                 _LOGGER.debug("Artwork for %s unreadable: %s", entity_id, err)
-        return [payload.Frame(im, ms) for im, ms in animations.now_playing(cover, caption, color, size)]
+        frames = [payload.Frame(im, ms) for im, ms in animations.now_playing(cover, caption, color, side)]
+        if (w, h) == (side, side):
+            return frames
+        return payload.frames_from_images(((f.image, f.duration) for f in frames), size=(w, h),
+                                          fit=payload.FIT_CONTAIN, resample="nearest")
 
     return Prepared(render, (0, 0, 0), f"now playing {title}")
 
